@@ -1,0 +1,46 @@
+name: 打包发布
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 用 PyInstaller 打包（含 icon.ico）
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name "SCS存档修改器" `
+            --icon "icon.ico" `
+            --add-data "icon.ico;." `
+            "SCS_存档修改器_PySide6.py"
+        shell: pwsh
+
+      - name: 上传打包产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: SCS存档修改器
+          path: dist/SCS存档修改器.exe
+
+      - name: 创建 GitHub Release（仅标签推送时）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/SCS存档修改器.exe
+          generate_release_notes: true
