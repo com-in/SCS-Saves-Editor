@@ -8,10 +8,15 @@ build/
 dist/
 *.spec
 
-# 存档与备份数据
+# 存档与备份数据（示例存档、玩家存档、临时 JSON）
 *.es3
 *.es3.bak
+*.json
 ES3_Backups/
+samples/
+example*/
+test_save*/
+example_saves/
 
 # 临时脚本/截图
 _shot*.py
