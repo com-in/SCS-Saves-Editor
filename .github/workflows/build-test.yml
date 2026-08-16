@@ -1,0 +1,40 @@
+name: 构建测试
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 用 PyInstaller 打包（含 icon.ico）
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name "SCS存档修改器" `
+            --icon "icon.ico" `
+            --add-data "icon.ico;." `
+            "main.py"
+        shell: pwsh
+
+      # 仅上传为构建产物(Artifact)，绝不创建 Release / 发布
+      - name: 上传打包产物（测试用）
+        uses: actions/upload-artifact@v4
+        with:
+          name: SCS存档修改器-test
+          path: dist/SCS存档修改器.exe
