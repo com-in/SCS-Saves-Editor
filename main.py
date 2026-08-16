@@ -344,16 +344,20 @@ class ES3Editor(QMainWindow):
         bh.setSpacing(8)
 
         btn_open = QPushButton("📂 打开存档")
+        btn_find = QPushButton("🔍 查找存档")
         btn_save = QPushButton("💾 保存存档")
         btn_backup = QPushButton("📋 备份目录")
+        btn_find.setObjectName("Ghost")
         btn_save.setObjectName("Ghost")
         btn_backup.setObjectName("Ghost")
         btn_open.clicked.connect(self.open_file)
+        btn_find.clicked.connect(self.find_save_file)
         btn_save.clicked.connect(self.save_file)
         btn_backup.clicked.connect(self.open_backup_dir)
         self.btn_backup = btn_backup
 
         bh.addWidget(btn_open)
+        bh.addWidget(btn_find)
         bh.addWidget(btn_save)
         bh.addWidget(btn_backup)
         bh.addStretch(1)
@@ -777,7 +781,87 @@ class ES3Editor(QMainWindow):
                 "ES3 存档 (*.es3);;JSON 文件 (*.json);;所有文件 (*.*)")
             if not path:
                 return
+            self._load_file(path)
+        except Exception as e:
+            QMessageBox.critical(self, "打开失败", f"错误: {e}")
+            self.log(f"❌ 打开失败: {e}")
 
+    def _scan_saves(self):
+        """扫描两个默认位置，返回找到的存档路径列表（去重、按路径排序）。"""
+        game_slots = os.path.join(
+            os.environ.get("LOCALAPPDATA", ""), "Low",
+            "Jiao Games", "Scam Center Simulator_ UnderKingdom", "slots")
+        local = os.path.dirname(os.path.abspath(__file__))
+        found = set()
+        for d in (game_slots, local):
+            if os.path.isdir(d):
+                for root, _, files in os.walk(d):
+                    for fn in files:
+                        if fn.lower().endswith((".es3", ".json")):
+                            found.add(os.path.join(root, fn))
+        return sorted(found)
+
+    def find_save_file(self):
+        """查找并存档选择弹窗，用户选择后直接加载。"""
+        try:
+            saves = self._scan_saves()
+        except Exception as e:
+            QMessageBox.warning(self, "查找失败", f"扫描存档时出错:\n{e}")
+            self.log(f"❌ 扫描失败: {e}")
+            return
+
+        if not saves:
+            QMessageBox.information(
+                self, "未找到存档",
+                "未找到存档。已搜索以下位置：\n1. 程序运行目录\n"
+                "2. C:\\Users\\<用户名>\\AppData\\LocalLow\\Jiao Games\\"
+                "Scam Center Simulator_ UnderKingdom\\slots\\")
+            self.log("🔍 未找到存档")
+            return
+
+        picked = self._pick_save_dialog(saves)
+        if picked:
+            self._load_file(picked)
+
+    def _pick_save_dialog(self, saves):
+        """列出找到的存档，返回用户选中的路径；取消则返回 None。"""
+        from PySide6.QtWidgets import QDialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"查找存档（共 {len(saves)} 个）")
+        dlg.resize(640, 460)
+        lay = QVBoxLayout(dlg)
+        hint = QLabel("双击或选中后点【打开】加载对应的存档：")
+        hint.setObjectName("Hint")
+        lay.addWidget(hint)
+
+        listw = QListWidget()
+        for p in saves:
+            it = QListWidgetItem(p)
+            it.setToolTip(p)
+            listw.addItem(it)
+        if saves:
+            listw.setCurrentRow(0)
+        listw.itemDoubleClicked.connect(lambda _: dlg.accept())
+        lay.addWidget(listw, 1)
+
+        btn_ok = QPushButton("打开")
+        btn_cancel = QPushButton("取消")
+        btn_cancel.setObjectName("Ghost")
+        btn_ok.clicked.connect(dlg.accept)
+        btn_cancel.clicked.connect(dlg.reject)
+        h = QHBoxLayout()
+        h.addStretch(1)
+        h.addWidget(btn_ok)
+        h.addWidget(btn_cancel)
+        lay.addLayout(h)
+
+        if dlg.exec() and listw.currentItem():
+            return listw.currentItem().text()
+        return None
+
+    def _load_file(self, path):
+        """加载指定存档：解析 JSON、自动备份、刷新界面。"""
+        try:
             self.file_path = path
             self.log(f"正在打开: {path}")
 
