@@ -742,10 +742,38 @@ class ES3Editor(QMainWindow):
             node["value"] = value
 
     # ==================== 文件操作 ====================
+    def _guess_default_dir(self):
+        """自动查找常见位置的存档，返回打开对话框的默认目录。
+        依次扫描：游戏 slots 目录、程序所在目录，取命中存档数最多的目录。
+        """
+        game_slots = os.path.join(
+            os.environ.get("LOCALAPPDATA", ""), "Low",
+            "Jiao Games", "Scam Center Simulator_ UnderKingdom", "slots")
+        local = os.path.dirname(os.path.abspath(__file__))
+
+        save_dirs = {}  # dir -> 命中存档数量
+        for d in (game_slots, local):
+            if not os.path.isdir(d):
+                continue
+            cnt = 0
+            for root, _, files in os.walk(d):
+                for fn in files:
+                    if fn.lower().endswith((".es3", ".json")):
+                        cnt += 1
+            if cnt:
+                save_dirs[d] = cnt
+
+        if not save_dirs:
+            return ""
+        return max(save_dirs, key=save_dirs.get)
+
     def open_file(self):
         try:
+            start_dir = self._guess_default_dir()
+            if start_dir:
+                self.log(f"🔍 已自动定位到存档目录: {start_dir}")
             path, _ = QFileDialog.getOpenFileName(
-                self, "选择 ES3 存档文件", "",
+                self, "选择 ES3 存档文件", start_dir,
                 "ES3 存档 (*.es3);;JSON 文件 (*.json);;所有文件 (*.*)")
             if not path:
                 return
