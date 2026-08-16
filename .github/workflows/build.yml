@@ -29,7 +29,7 @@ jobs:
             --name "SCS存档修改器" `
             --icon "icon.ico" `
             --add-data "icon.ico;." `
-            "SCS_存档修改器_PySide6.py"
+            "main.py"
         shell: pwsh
 
       - name: 上传打包产物
