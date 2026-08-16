@@ -32,9 +32,7 @@ jobs:
             "main.py"
         shell: pwsh
 
-      # 仅上传为构建产物(Artifact)，绝不创建 Release / 发布
-      - name: 上传打包产物（测试用）
-        uses: actions/upload-artifact@v4
-        with:
-          name: SCS存档修改器-test
-          path: dist/SCS存档修改器.exe
+      # 产物仅保留在构建环境中，不上传、不发布、不进 Release
+      - name: 校验打包产物存在
+        run: |
+          Test-Path "dist/SCS存档修改器.exe"
