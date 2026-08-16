@@ -844,8 +844,12 @@ class ES3Editor(QMainWindow):
 
         listw = QListWidget()
         for p in saves:
-            it = QListWidgetItem(p)
+            # 显示: 文件名 —— 所在目录 (tooltip 保留完整路径)
+            name = os.path.basename(p)
+            folder = os.path.dirname(p)
+            it = QListWidgetItem(f"{name}   ——   {folder}")
             it.setToolTip(p)
+            it.setData(Qt.UserRole, p)
             listw.addItem(it)
         if saves:
             listw.setCurrentRow(0)
@@ -864,7 +868,7 @@ class ES3Editor(QMainWindow):
         lay.addLayout(h)
 
         if dlg.exec() and listw.currentItem():
-            return listw.currentItem().text()
+            return listw.currentItem().data(Qt.UserRole)
         return None
 
     def _load_file(self, path):
