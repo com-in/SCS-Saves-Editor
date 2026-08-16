@@ -750,9 +750,13 @@ class ES3Editor(QMainWindow):
         """自动查找常见位置的存档，返回打开对话框的默认目录。
         依次扫描：游戏 slots 目录、程序所在目录，取命中存档数最多的目录。
         """
+        # 游戏存档目录: C:\Users\<用户>\AppData\LocalLow\Jiao Games\...
+        # LocalLow 是 Local 的兄弟目录, 不能直接 LOCALAPPDATA + "Low"
+        local_low = os.path.join(
+            os.path.dirname(os.environ.get("LOCALAPPDATA", "")), "LocalLow")
         game_slots = os.path.join(
-            os.environ.get("LOCALAPPDATA", ""), "Low",
-            "Jiao Games", "Scam Center Simulator_ UnderKingdom", "slots")
+            local_low, "Jiao Games",
+            "Scam Center Simulator_ UnderKingdom", "slots")
         local = os.path.dirname(os.path.abspath(__file__))
 
         save_dirs = {}  # dir -> 命中存档数量
@@ -788,9 +792,13 @@ class ES3Editor(QMainWindow):
 
     def _scan_saves(self):
         """扫描两个默认位置，返回找到的存档路径列表（去重、按路径排序）。"""
+        # 游戏存档目录: C:\Users\<用户>\AppData\LocalLow\Jiao Games\...
+        # LocalLow 是 Local 的兄弟目录, 不能直接 LOCALAPPDATA + "Low"
+        local_low = os.path.join(
+            os.path.dirname(os.environ.get("LOCALAPPDATA", "")), "LocalLow")
         game_slots = os.path.join(
-            os.environ.get("LOCALAPPDATA", ""), "Low",
-            "Jiao Games", "Scam Center Simulator_ UnderKingdom", "slots")
+            local_low, "Jiao Games",
+            "Scam Center Simulator_ UnderKingdom", "slots")
         local = os.path.dirname(os.path.abspath(__file__))
         found = set()
         for d in (game_slots, local):
