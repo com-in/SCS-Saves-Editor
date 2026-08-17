@@ -1150,13 +1150,22 @@ class ES3Editor(QMainWindow):
                 abilities = npc["abilities"] = []
             ab_map = {str(a.get("abilityName", "")).lower(): a
                       for a in abilities if isinstance(a, dict)}
+            # 力量上限80：输入超过80则强制钳制到80
+            if key == "strength":
+                STRENGTH_MAX = 80
+                val = min(safe_float(self.worker_entries[key].text()), STRENGTH_MAX)
+                self.worker_entries["strength"].blockSignals(True)
+                self.worker_entries["strength"].setText(str(val))
+                self.worker_entries["strength"].blockSignals(False)
+            else:
+                val = safe_float(self.worker_entries[key].text())
             cap = key.capitalize()
             if key in ab_map:
-                ab_map[key]["value"] = safe_float(self.worker_entries[key].text())
+                ab_map[key]["value"] = val
             else:
                 abilities.append({
                     "abilityName": cap, "minValue": 1, "maxValue": 4,
-                    "value": safe_float(self.worker_entries[key].text())})
+                    "value": val})
         else:
             w[key] = safe_float(self.worker_entries[key].text())
 
