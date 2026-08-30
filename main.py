@@ -473,6 +473,12 @@ class ES3Editor(QMainWindow):
         bh.addWidget(btn_backup)
         bh.addWidget(btn_restore)
         bh.addStretch(1)
+        # 复制按钮：与"打开存档"同行；仅选中"放置物品"页一行时显示
+        self.placed_copy_btn = QPushButton("📋 复制")
+        self.placed_copy_btn.setObjectName("Ghost")
+        self.placed_copy_btn.setVisible(False)
+        self.placed_copy_btn.clicked.connect(self._placed_copy_row)
+        bh.addWidget(self.placed_copy_btn)
         rv.addWidget(btn_bar)
 
         # 右侧：内容栈
@@ -1508,6 +1514,8 @@ class ES3Editor(QMainWindow):
             "tamingNpcs": "驯服NPC", "stockStationIndex": "补货站索引",
             "stockStationTimeInterval": "补货间隔(秒)", "stockStationStockLimit": "补货上限",
         }
+        self.placed_table._readonly_cols = ("id",)
+        self.placed_table.itemSelectionChanged.connect(self._on_placed_selection)
         lay.addWidget(self.placed_table, 1)
         lay.addWidget(self._build_row_ops_bar(self.placed_table))
         self._table_keys["PlaceItems"] = self.placed_table
@@ -1690,6 +1698,10 @@ class ES3Editor(QMainWindow):
             name_col = {"name": getattr(table, "_name_col_title", "名称"),
                         "path": ["__name__"], "is_name": True, "id": id_field}
             colspec = [name_col] + colspec
+        for _t, _p in (getattr(table, "_extra_bool_cols", {}) or {}).items():
+            _k = [_p]
+            if not any(s2["path"] == _k for s2 in colspec):
+                colspec.append({"name": _t, "path": _k, "type": "bool", "optional": True})
         table._list_meta = {"cols": colspec}
         # 中文表头映射（如有）
         header_map = getattr(table, "_header_map", {}) or {}
@@ -1715,6 +1727,17 @@ class ES3Editor(QMainWindow):
                     continue
                 v = self._pick_path(it, spec["path"])
                 readonly = spec["path"][0] in readonly_cols
+                if spec.get("optional"):
+                    _has = isinstance(it, dict) and spec["path"][0] in it
+                    if _has:
+                        cell = self._new_bool_cell(bool(v))
+                        if readonly:
+                            cell.setFlags(cell.flags() & ~Qt.ItemIsEnabled)
+                    else:
+                        cell = QTableWidgetItem("")
+                        cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
+                    table.setItem(r, c, cell)
+                    continue
                 if spec["type"] == "bool":
                     cell = self._new_bool_cell(bool(v))
                     if readonly:
@@ -1766,6 +1789,9 @@ class ES3Editor(QMainWindow):
                 if spec.get("is_name"):
                     continue
                 it = table.item(r, c)
+                if (spec.get("optional") and it is not None and spec["type"] == "bool"
+                        and not (it.flags() & Qt.ItemIsUserCheckable)):
+                    continue
                 if spec["type"] == "bool" and it is not None:
                     val = (it.checkState() == Qt.Checked)
                 else:
@@ -1877,6 +1903,46 @@ class ES3Editor(QMainWindow):
             table.removeRow(r)
         if isinstance(table, QPlainTextEdit):
             return
+
+    def _on_placed_selection(self):
+        has = len(self.placed_table.selectionModel().selectedRows()) > 0
+        self.placed_copy_btn.setVisible(has)
+
+    def _placed_copy_row(self):
+        """复制选中放置物品：在"物品"列表新增一行盒装物品（isBox=true，盒内物品ID=复制目标物品ID）。"""
+        r = self.placed_table.currentRow()
+        if r < 0:
+            return
+        placed = self._list_save(self.placed_table)
+        if r >= len(placed):
+            return
+        target = placed[r]
+        if not isinstance(target, dict):
+            return
+        tid = target.get("itemDataId", 0)
+        new = {
+            "itemId": tid,
+            "position": copy.deepcopy(target.get("position", {"x": 0, "y": 0, "z": 0})),
+            "rotation": copy.deepcopy(target.get("rotation", {"x": 0, "y": 0, "z": 0, "w": 1})),
+            "isBox": True,
+            "boxItemId": tid,
+            "quantity": 1,
+            "isGarbage": False,
+            "garbageTypeId": 0,
+            "garbageId": 0,
+            "isFood": False,
+            "isDead": False,
+        }
+        items = self.es3_get("Items")
+        if not isinstance(items, list):
+            items = []
+        items.append(new)
+        self.es3_set("Items", items)
+        self._list_load(self.items_table, items)
+        # 复制完成后自动跳转到"物品"菜单页
+        row = self._nav_keys.index("items")
+        if row != self.nav_list.currentRow():
+            self.nav_list.setCurrentRow(row)
 
     # ---------- "其他"页通用编辑器 ----------
     def _on_other_key_changed(self):
