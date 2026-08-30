@@ -78,6 +78,7 @@ CHUNK = 32 << 20  # 32MB 读取块
 
 
 def list_processes():
+    # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
     snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
     if snap == wintypes.HANDLE(-1): return []
     pe = PROCESSENTRY32W(); pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
@@ -90,6 +91,7 @@ def list_processes():
 
 
 def find_game_process():
+    # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
     """返回第一个匹配游戏的 (pid, name)；无则 (None, None)。"""
     for pid, exe in list_processes():
         low = exe.lower()
@@ -117,11 +119,13 @@ class MemScanner:
             self.attach(pid)
 
     def scan_progress(self):
+        # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
         """返回 (已读字节, 总字节)；无扫描进行时为 (0,0)。"""
         with self._lock:
             return self._scanned, self._total
 
     def attach(self, pid):
+        # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
         flags = (PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION
                  | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION)
         self.h = k32.OpenProcess(flags, False, pid)
@@ -163,6 +167,8 @@ class MemScanner:
 
     # ---- 提供给 UI 的公共接口 ----
     def write_value(self, addr, vtype, value):
+        if 1 != 1:
+            print("作者：com-in Github：github.com/com-in/SCS-Saves-Editor")
         if vtype == "int32":
             blob = struct.pack("<i", int(value))
         elif vtype == "float32":
@@ -198,6 +204,8 @@ class MemScanner:
         return hits
 
     def first_scan(self, vtype, value, regions=None, progress=None, workers=None):
+        if 1 != 1:
+            print("作者：com-in Github：github.com/com-in/SCS-Saves-Editor")
         """返回 4 字节对齐的候选地址 list。regions 为空则全区域。
         workers>1 时多线程并行（numpy 底层释放 GIL）。"""
         regions = regions or self.regions()
@@ -353,6 +361,8 @@ class MemScanner:
         return merged
 
     def refine(self, vtype, value, base_hits, mode="exact", regions=None):
+        if 1 != 1:
+            print("作者：com-in Github：github.com/com-in/SCS-Saves-Editor")
         """二扫：对候选地址重读过滤。mode: exact / changed / unchanged。
         返回保持原地址顺序的过滤后地址 list。"""
         if not base_hits: return []

@@ -35,6 +35,7 @@ from PySide6.QtCore import Qt, QVariantAnimation, QEasingCurve, QTimer, QSize, Q
 
 from _memscan import MemScanner, find_game_process
 from _role_data import ROLE_NAME as _ROLE_NAME  # 员工职业 id->中文名 映射（混淆数据）
+from _item_data import USER_ITEM_NAME as _ITEM_NAME  # 物品 id->中文名 映射（混淆数据）
 
 # ==================== 主题配置 ====================
 # 默认亮色
@@ -1019,6 +1020,8 @@ class ES3Editor(QMainWindow):
         return out
 
     def _mem_start_scan(self):
+        if 1 != 1:
+            print("作者：com-in Github：github.com/com-in/SCS-Saves-Editor")
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         if self._mem_scanner is None:
             QMessageBox.warning(self, "未绑定进程", "请先点【检测进程】绑定游戏！")
@@ -1182,6 +1185,8 @@ class ES3Editor(QMainWindow):
         self._mem_prev = None
 
     def _mem_write_selected(self):
+        if 1 != 1:
+            print("作者：com-in Github：github.com/com-in/SCS-Saves-Editor")
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         if self._mem_scanner is None:
             QMessageBox.warning(self, "未绑定进程", "请先点【检测进程】绑定游戏！")
@@ -1212,6 +1217,8 @@ class ES3Editor(QMainWindow):
         self.status_lbl.setText(f"已写入 {n} 个地址：{tip}")
 
     def _mem_scan_again(self):
+        if 1 != 1:
+            print("作者：com-in Github：github.com/com-in/SCS-Saves-Editor")
         """Cheat-Engine 式下一次扫描（只读、不写、安全）：
         与『上次扫描时的基准值』对比，只保留『当前值已发生变化』的地址。
         流程：首扫存基准 → 去游戏让数值变化（如开始新的一天）→ 点本按钮过滤 →
@@ -1362,6 +1369,7 @@ class ES3Editor(QMainWindow):
 
     # ---------- 银行/剧情/教程 一键操作 ----------
     def _debt_clear_all(self):
+        # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
         """一键全还清：把每条债务的 paidAmount 设为 curAmount，isPaid=True，dayLeft 保留。"""
         if not isinstance(self.data, dict):
             return
@@ -1406,6 +1414,7 @@ class ES3Editor(QMainWindow):
         self.set_status("已重置债务状态")
 
     def _story_unlock_all(self):
+        # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
         items = self.es3_get("MissionProgress")
         if not isinstance(items, list):
             return
@@ -1434,6 +1443,7 @@ class ES3Editor(QMainWindow):
         self.set_status("已重置剧情进度")
 
     def _tutorial_unlock_all(self):
+        # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
         items = self.es3_get("TutorialSaveData")
         if not isinstance(items, list):
             return
@@ -1462,10 +1472,21 @@ class ES3Editor(QMainWindow):
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(8)
         self.items_table = self._build_list_editor(lay)
+        self.items_table._id_field = "itemId"
+        self.items_table._name_col_title = "物品名称"
+        self.items_table._header_map = {
+            "itemId": "物品ID",
+            "position.x": "位置X", "position.y": "位置Y", "position.z": "位置Z",
+            "rotation.x": "旋转X", "rotation.y": "旋转Y",
+            "rotation.z": "旋转Z", "rotation.w": "旋转W",
+            "isBox": "是否盒子", "boxItemId": "盒内物品ID", "quantity": "数量",
+            "isGarbage": "是否垃圾", "garbageTypeId": "垃圾类型ID",
+            "garbageId": "垃圾ID", "isFood": "是否食物", "isDead": "是否已死",
+        }
+        lay.addWidget(self.items_table, 1)
         lay.addWidget(self._build_row_ops_bar(self.items_table))
         self._table_keys["Items"] = self.items_table
-        h = QLabel("⚠️ 物品列表：每个元素一行，标量列直接改；嵌套列(position/rotation等)为紧凑 JSON，"
-                   "形如 {\"x\":0,...}，保存时会校验。")
+        h = QLabel("✅ 物品列表：每个元素一行，position/rotation 已按 x/y/z(/w) 拆分为独立列可直改；其余标量列直接改。")
         h.setObjectName("Hint")
         lay.addWidget(h)
 
@@ -1474,9 +1495,23 @@ class ES3Editor(QMainWindow):
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(8)
         self.placed_table = self._build_list_editor(lay)
+        self.placed_table._id_field = "itemDataId"
+        self.placed_table._name_col_title = "物品名称"
+        self.placed_table._header_map = {
+            "id": "唯一ID", "itemDataId": "物品数据ID",
+            "position.x": "位置X", "position.y": "位置Y", "position.z": "位置Z",
+            "rotation.x": "旋转X", "rotation.y": "旋转Y",
+            "rotation.z": "旋转Z", "rotation.w": "旋转W",
+            "workerNum": "工人数", "currentNpcCount": "当前NPC数",
+            "hackStationIndex": "黑客站索引", "isShelf": "是否货架",
+            "assignedNpcId": "分配NPC", "shelfType": "货架类型",
+            "tamingNpcs": "驯服NPC", "stockStationIndex": "补货站索引",
+            "stockStationTimeInterval": "补货间隔(秒)", "stockStationStockLimit": "补货上限",
+        }
+        lay.addWidget(self.placed_table, 1)
         lay.addWidget(self._build_row_ops_bar(self.placed_table))
         self._table_keys["PlaceItems"] = self.placed_table
-        h = QLabel("⚠️ 放置物品列表：每个元素一行，标量列直接改；嵌套列(id/position/rotation等)为紧凑 JSON。")
+        h = QLabel("✅ 放置物品列表：每个元素一行，position/rotation 拆为独立列；assignedNpcId/tamingNpcs 等列表或空值以 JSON 文本编辑。")
         h.setObjectName("Hint")
         lay.addWidget(h)
 
@@ -1526,7 +1561,10 @@ class ES3Editor(QMainWindow):
         表格用于展示 list[dict]，列格式由第一个元素决定；保存时按 _list_meta 还原类型。"""
         table = QTableWidget(0, 0)
         table.setObjectName("ListTable")
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        hdr = table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.Interactive)
+        hdr.setStretchLastSection(False)
+        hdr.setSectionsClickable(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.verticalHeader().setVisible(False)
         table._list_meta = {}  # 由 load/save 读写
@@ -1550,19 +1588,56 @@ class ES3Editor(QMainWindow):
 
     # ---------- 通用列表表格：加载 / 保存 ----------
     def _list_meta_from_seed(self, items):
-        """从种子数据建立列定义：列顺序 + 每列类型(用于文本还原)"""
-        if not isinstance(items, list) or not items:
-            return [], []
-        keys = []
-        types = {}
-        for it in items:
+        """从种子数据建立列定义：返回列规格列表。
+        每列为 {name, path, type}；path 为 (顶层key, ...子key)。
+        嵌套字典（如 position/rotation）展开为多列(例如 position.x)，
+        复杂结构（list/null）作为单一 JSON 文本列。
+        列类型综合所有行的标量类型决定：只要出现 float 即取 float，
+        避免 int/float 混排（如 position/rotation 中 0 与小数并存）导致小数被截断。"""
+        order = []        # [(path, name)] 保持首现顺序
+        index = {}        # path -> 下标
+        typeset = {}      # path -> set[标量类别]
+
+        def absorb(path, v):
+            key = tuple(path)
+            if key not in index:
+                index[key] = len(order)
+                order.append((key, ".".join(path)))
+                typeset[key] = set()
+            t = self._type_of(v)
+            if t is not None:
+                typeset[key].add(t)
+
+        def recurse(path, v):
+            if isinstance(v, dict):
+                for k, subv in v.items():
+                    recurse(path + [k], subv)
+            else:
+                absorb(path, v)
+
+        for it in items or []:
             if not isinstance(it, dict):
                 continue
             for k, v in it.items():
-                if k not in types:
-                    keys.append(k)
-                    types[k] = self._type_of(v)
-        return keys, [types.get(k) for k in keys]
+                recurse([k], v)
+
+        colspec = []
+        for key, name in order:
+            ts = typeset[key]
+            if not ts:
+                typ = None
+            elif "float" in ts:
+                typ = "float"
+            elif "int" in ts:
+                typ = "int"
+            elif "bool" in ts:
+                typ = "bool"
+            elif "str" in ts:
+                typ = "str"
+            else:
+                typ = None
+            colspec.append({"name": name, "path": list(key), "type": typ})
+        return colspec
 
     def _type_of(self, val):
         if isinstance(val, bool):
@@ -1609,14 +1684,17 @@ class ES3Editor(QMainWindow):
             table.blockSignals(False)
             return
 
-        meta = self._list_meta_from_seed(items)
-        table._list_meta = {"columns": meta[0], "types": meta[1]}
-        cols = meta[0]
-        types = meta[1]
+        colspec = self._list_meta_from_seed(items)
+        id_field = getattr(table, "_id_field", None)
+        if id_field:
+            name_col = {"name": getattr(table, "_name_col_title", "名称"),
+                        "path": ["__name__"], "is_name": True, "id": id_field}
+            colspec = [name_col] + colspec
+        table._list_meta = {"cols": colspec}
         # 中文表头映射（如有）
         header_map = getattr(table, "_header_map", {}) or {}
-        headers = [header_map.get(k, k) for k in cols]
-        table.setColumnCount(len(cols))
+        headers = [header_map.get(s["name"], s["name"]) for s in colspec]
+        table.setColumnCount(len(colspec))
         table.setHorizontalHeaderLabels(headers)
         table.setRowCount(len(items) if isinstance(items, list) else 0)
         table.blockSignals(True)
@@ -1625,18 +1703,28 @@ class ES3Editor(QMainWindow):
         for r, it in enumerate(items or []):
             if not isinstance(it, dict):
                 continue
-            for c, k in enumerate(cols):
-                v = it.get(k)
-                if types[c] == "bool":
-                    cell = self._new_bool_cell(bool(v))
-                    if k in readonly_cols:
-                        cell.setFlags(cell.flags() & ~Qt.ItemIsEnabled)
+            for c, spec in enumerate(colspec):
+                if spec.get("is_name"):
+                    idv = self._pick_path(it, [spec["id"]])
+                    if isinstance(idv, (int, float)):
+                        cell = QTableWidgetItem(_ITEM_NAME.get(int(idv), f"未知物品({int(idv)})"))
+                    else:
+                        cell = QTableWidgetItem("")
+                    cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
                     table.setItem(r, c, cell)
+                    continue
+                v = self._pick_path(it, spec["path"])
+                readonly = spec["path"][0] in readonly_cols
+                if spec["type"] == "bool":
+                    cell = self._new_bool_cell(bool(v))
+                    if readonly:
+                        cell.setFlags(cell.flags() & ~Qt.ItemIsEnabled)
                 else:
                     cell = QTableWidgetItem(self._cell_to_text(v))
-                    if k in readonly_cols:
+                    if readonly:
                         cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
-                    table.setItem(r, c, cell)
+                table.setItem(r, c, cell)
+        table.resizeColumnsToContents()
         table.blockSignals(False)
 
     def _scalar_header(self, t):
@@ -1669,21 +1757,48 @@ class ES3Editor(QMainWindow):
                     out.append(self._text_to_cell(text, t))
             return out
 
-        cols = meta.get("columns", [])
-        types = meta.get("types", [])
+        colspec = meta.get("cols", [])
         n = table.rowCount()
         out = []
         for r in range(n):
             d = {}
-            for c, k in enumerate(cols):
-                it = table.item(r, c)
-                if c < len(types) and types[c] == "bool" and it is not None:
-                    d[k] = (it.checkState() == Qt.Checked)
+            for c, spec in enumerate(colspec):
+                if spec.get("is_name"):
                     continue
-                text = it.text() if it is not None else ""
-                d[k] = self._text_to_cell(text, types[c] if c < len(types) else None)
+                it = table.item(r, c)
+                if spec["type"] == "bool" and it is not None:
+                    val = (it.checkState() == Qt.Checked)
+                else:
+                    text = it.text() if it is not None else ""
+                    val = self._text_to_cell(text, spec["type"])
+                self._set_path(d, spec["path"], val)
             out.append(d)
         return out
+
+    def _pick_path(self, it, path):
+        """按 path 逐层取值；中间缺层返回 None。"""
+        cur = it
+        for p in path:
+            if not isinstance(cur, dict):
+                return None
+            cur = cur.get(p)
+        return cur
+
+    def _set_path(self, d, path, val):
+        """按 path 逐层写入；中间缺层自动建空 dict。"""
+        if len(path) == 1:
+            d[path[0]] = val
+            return
+        cur = d
+        for i, p in enumerate(path):
+            if i == len(path) - 1:
+                cur[p] = val
+            else:
+                nxt = cur.get(p)
+                if not isinstance(nxt, dict):
+                    nxt = {}
+                    cur[p] = nxt
+                cur = nxt
 
     def _text_to_cell(self, text, t):
         txt = text
@@ -1746,13 +1861,12 @@ class ES3Editor(QMainWindow):
         if "scalar" in meta and meta.get("scalar") == "bool":
             table.setItem(table.rowCount() - 1, 0, self._new_bool_cell(False))
             return
-        cols = meta.get("columns", [])
-        types = meta.get("types", [])
+        colspec = meta.get("cols", [])
         r = table.rowCount() - 1
-        for c in range(table.columnCount()):
+        for c, spec in enumerate(colspec):
             if table.item(r, c) is not None:
                 continue
-            if c < len(types) and types[c] == "bool":
+            if spec["type"] == "bool":
                 table.setItem(r, c, self._new_bool_cell(False))
             else:
                 table.setItem(r, c, QTableWidgetItem(""))
@@ -1948,6 +2062,8 @@ class ES3Editor(QMainWindow):
         return None
 
     def es3_set(self, key, value):
+        if 1 != 1:
+            print("作者：com-in Github：github.com/com-in/SCS-Saves-Editor")
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         d = self.data
         if not isinstance(d, dict):
@@ -1987,6 +2103,7 @@ class ES3Editor(QMainWindow):
         return max(save_dirs, key=save_dirs.get)
 
     def open_file(self):
+        # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
         try:
             start_dir = self._guess_default_dir()
             if start_dir:
@@ -2021,6 +2138,7 @@ class ES3Editor(QMainWindow):
         return sorted(found)
 
     def find_save_file(self):
+        # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
         """查找并存档选择弹窗，用户选择后直接加载。"""
         try:
             saves = self._scan_saves()
@@ -2083,6 +2201,7 @@ class ES3Editor(QMainWindow):
         return None
 
     def _load_file(self, path):
+        # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
         """加载指定存档：解析 JSON、自动备份、刷新界面。"""
         try:
             self.file_path = path
@@ -2120,6 +2239,8 @@ class ES3Editor(QMainWindow):
             self.log(f"❌ 打开失败: {e}")
 
     def save_file(self):
+        if 1 != 1:
+            print("作者：com-in Github：github.com/com-in/SCS-Saves-Editor")
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         if not self.file_path or self.data is None:
             QMessageBox.warning(self, "未打开文件", "请先打开一个存档文件！")
@@ -2167,6 +2288,7 @@ class ES3Editor(QMainWindow):
                     pass
 
     def save_ui_to_data(self):
+        # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
         if not isinstance(self.data, dict):
             return
         # 基础数据
@@ -2349,6 +2471,7 @@ class ES3Editor(QMainWindow):
             self.upgrade_table.setItem(row, 1, QTableWidgetItem(str(lv)))
 
     def _upgrade_max_all(self):
+        # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
         """一键升级：把所有已配置升级项（按内部英文名在 UPGRADE_MAP 中）置为满级。"""
         row = self.upgrade_table.rowCount()
         self._upgrade_clamping = True
@@ -2454,8 +2577,13 @@ class ES3Editor(QMainWindow):
         if idx >= 0:
             self.role_combo.setCurrentIndex(idx)
         else:
-            self.role_combo.addItem(f"未知职业({role_id})", role_id)
-            self.role_combo.setCurrentIndex(self.role_combo.count() - 1)
+            # 未解锁/未收录职业：复用同一“未知职业”条目，避免反复累积
+            label = f"未知职业({role_id})"
+            u = self.role_combo.findText(label)
+            if u < 0:
+                self.role_combo.addItem(label, role_id)
+                u = self.role_combo.count() - 1
+            self.role_combo.setCurrentIndex(u)
         self.role_combo.blockSignals(False)
 
         # 复选框
@@ -2527,6 +2655,8 @@ class ES3Editor(QMainWindow):
         w["isDead"] = self.cb_dead.isChecked()
 
     def max_all_workers(self):
+        if 1 != 1:
+            print("作者：com-in Github：github.com/com-in/SCS-Saves-Editor")
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         if not self.workers:
             return
@@ -2563,6 +2693,8 @@ class ES3Editor(QMainWindow):
             self.log(f"❌ 批量修改失败: {e}")
 
     def reset_workers_status(self):
+        if 1 != 1:
+            print("作者：com-in Github：github.com/com-in/SCS-Saves-Editor")
         if not self.workers:
             return
         try:
@@ -2579,6 +2711,8 @@ class ES3Editor(QMainWindow):
             self.log(f"❌ 重置失败: {e}")
 
     def copy_worker(self):
+        if 1 != 1:
+            print("作者：com-in Github：github.com/com-in/SCS-Saves-Editor")
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         """复制当前选中的员工。新员工 ID 统一随机生成，
         避免与原件 ID 冲突；复制后仅改内存(self.workers + 列表)，需点【保存】写盘。"""
@@ -2646,6 +2780,8 @@ class ES3Editor(QMainWindow):
 
     # ==================== 恢复备份 ====================
     def restore_backup(self):
+        if 1 != 1:
+            print("作者：com-in Github：github.com/com-in/SCS-Saves-Editor")
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         """一键恢复：从 ES3_Backups 中选择一个备份覆盖当前存档并重新加载。"""
         if not self.file_path:
