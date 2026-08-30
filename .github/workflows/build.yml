@@ -3,7 +3,8 @@ name: 打包发布
 on:
   push:
     tags:
-      - "v*"
+      # 仅“指定版本号标签”(如 v1.1.0) 触发发布流程；其它推送一律走测试构建
+      - "v*.*.*"
   workflow_dispatch:
 
 jobs:

@@ -5,6 +5,14 @@
 功能: 安全编辑Unity ES3 JSON存档(真实ES3结构)，自动备份，防闪退
 适配结构: 顶层 key -> {"__type":..., "value":...}
 """
+# =====================================================================
+# Copyright (C) 2026 com-in
+# 项目仓库: https://github.com/com-in/SCS-Saves-Editor
+# 本程序依照 GNU 通用公共许可证 v3（或更高版本）发布。
+# 严禁删除或遮蔽本版权声明；任何二次发布/修改/再分发必须遵守 GPLv3
+# 并保留原作者署名。任何未经授权移除署名、抄袭、窜改归属的行为均属侵权。
+# 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9（仅为版权署名追踪标识，无任何功能）
+# =====================================================================
 import os
 import time
 import shutil
@@ -26,6 +34,7 @@ from PySide6.QtGui import QFont, QIcon, QColor, QPixmap
 from PySide6.QtCore import Qt, QVariantAnimation, QEasingCurve, QTimer, QSize, QThread, Signal, QSettings
 
 from _memscan import MemScanner, find_game_process
+from _role_data import ROLE_NAME as _ROLE_NAME  # 员工职业 id->中文名 映射（混淆数据）
 
 # ==================== 主题配置 ====================
 # 默认亮色
@@ -139,6 +148,23 @@ QTableWidget {{
 QHeaderView::section {{
     background: {CARD}; color: {T}; padding: 6px; border: none;
     border-bottom: 1px solid {BD}; font-weight: bold;
+}}
+QComboBox {{
+    background: {ENTRY}; color: {T};
+    border: 1px solid {BD}; border-radius: 6px;
+    padding: 6px 8px; selection-background-color: {ACC};
+}}
+QComboBox:focus {{ border: 1px solid {ACC}; }}
+QComboBox::drop-down {{
+    border: none; width: 26px;
+}}
+QComboBox::down-arrow {{
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMiIgaGVpZ2h0PSI4IiB2aWV3Qm94PSIwIDAgMTIgOCI+PHBhdGggZD0iTTEgMWw1IDUgNS01IiBmaWxsPSJub25lIiBzdHJva2U9IiM4OWI0ZmEiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+);
+    width: 12px; height: 8px;
+}}
+QComboBox QAbstractItemView {{
+    background: {CARD}; color: {T}; border: 1px solid {BD};
+    selection-background-color: {ACC}; selection-color: {BG}; outline: 0;
 }}
 QCheckBox {{ spacing: 8px; background: transparent; color: {T}; }}
 QCheckBox#DeadCheck {{ color: {D}; }}
@@ -385,9 +411,7 @@ class ES3Editor(QMainWindow):
             ("🏗️", "放置物品", "placed"),
             ("⬆️", "升级", "upgrade"),
             ("🔬", "内存 BETA", "memory"),
-            ("🏦", "银行还款", "debt"),
-            ("📖", "剧情解锁", "story"),
-            ("🎓", "教程解锁", "tutorial"),
+            ("🔓", "解锁管理", "unlock"),
             ("⚙️", "其他", "other"),
         ]
         self._nav_icons = [it[0] for it in self.nav_items]
@@ -430,19 +454,23 @@ class ES3Editor(QMainWindow):
         btn_find = QPushButton("🔍 查找存档")
         btn_save = QPushButton("💾 保存存档")
         btn_backup = QPushButton("📋 备份目录")
+        btn_restore = QPushButton("♻️ 恢复备份")
         btn_find.setObjectName("Ghost")
         btn_save.setObjectName("Ghost")
         btn_backup.setObjectName("Ghost")
+        btn_restore.setObjectName("Ghost")
         btn_open.clicked.connect(self.open_file)
         btn_find.clicked.connect(self.find_save_file)
         btn_save.clicked.connect(self.save_file)
         btn_backup.clicked.connect(self.open_backup_dir)
+        btn_restore.clicked.connect(self.restore_backup)
         self.btn_backup = btn_backup
 
         bh.addWidget(btn_open)
         bh.addWidget(btn_find)
         bh.addWidget(btn_save)
         bh.addWidget(btn_backup)
+        bh.addWidget(btn_restore)
         bh.addStretch(1)
         rv.addWidget(btn_bar)
 
@@ -457,15 +485,12 @@ class ES3Editor(QMainWindow):
         self.tab_placed = QWidget()
         self.tab_upgrade = QWidget()
         self.tab_memory = QWidget()
-        self.tab_debt = QWidget()
-        self.tab_story = QWidget()
-        self.tab_tutorial = QWidget()
+        self.tab_story = QWidget()   # 合并页：银行还款 / 剧情解锁 / 教程解锁
         self.tab_other = QWidget()
 
         for page in (self.tab_basic, self.tab_workers, self.tab_crypto,
                      self.tab_items, self.tab_placed, self.tab_upgrade,
-                     self.tab_memory, self.tab_debt, self.tab_story,
-                     self.tab_tutorial, self.tab_other):
+                     self.tab_memory, self.tab_story, self.tab_other):
             self.stack.addWidget(page)
         rv.addWidget(self.stack, 1)
 
@@ -994,6 +1019,7 @@ class ES3Editor(QMainWindow):
         return out
 
     def _mem_start_scan(self):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         if self._mem_scanner is None:
             QMessageBox.warning(self, "未绑定进程", "请先点【检测进程】绑定游戏！")
             return
@@ -1156,6 +1182,7 @@ class ES3Editor(QMainWindow):
         self._mem_prev = None
 
     def _mem_write_selected(self):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         if self._mem_scanner is None:
             QMessageBox.warning(self, "未绑定进程", "请先点【检测进程】绑定游戏！")
             return
@@ -1232,6 +1259,17 @@ class ES3Editor(QMainWindow):
                 "请回到游戏让该值变化（开始新的一天）后再点【下一次扫描】。")
             self.log("下一次扫描无保留：数值未发生变化。")
             return
+        # 删除前确认：避免静默剔除未变化选项导致目标地址丢失
+        if dropped > 0 and kept:
+            _c = QMessageBox.question(
+                self, "确认删除选项",
+                f"下一次扫描将删除 {dropped} 个未变化的候选选项，"
+                f"仅保留 {kept} 个已变化的候选地址。\n\n是否继续？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if _c != QMessageBox.Yes:
+                self.log("已取消下一次扫描，未删除任何选项。")
+                self.status_lbl.setText("已取消下一次扫描，候选选项未删除。")
+                return
         # 用保留集的当前值作为下一轮基准
         new_prev = {}
         for nm, addrs in new.items():
@@ -1259,116 +1297,68 @@ class ES3Editor(QMainWindow):
 
     # ---------- 银行还款 / 剧情解锁 / 教程解锁（表格 + 一键操作） ----------
     def build_debt_story_tutorial_tabs(self):
-        # === 银行还款管理 ===
-        lay = QVBoxLayout(self.tab_debt)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(8)
-
-        title = QLabel("🏦 银行还款管理")
-        title.setObjectName("CardTitle")
-        lay.addWidget(title)
-
-        # 一键操作按钮
-        bar = QHBoxLayout()
-        bar.setSpacing(8)
-        b1 = QPushButton("🎁 一键全还清")
-        b2 = QPushButton("🔓 一键解锁债务")
-        b3 = QPushButton("♻️ 重置债务")
-        b3.setObjectName("Ghost")
-        b1.clicked.connect(self._debt_clear_all)
-        b2.clicked.connect(self._debt_unlock_all)
-        b3.clicked.connect(self._debt_reset)
-        bar.addWidget(b1)
-        bar.addWidget(b2)
-        bar.addWidget(b3)
-        bar.addStretch(1)
-        lay.addLayout(bar)
-
-        self.debt_table = self._build_list_editor(lay)
-        # 标记列名映射：原始字段 -> 中文表头
-        self._debt_headers = {
-            "paidAmount": "已还金额",
-            "curAmount": "当前金额",
-            "dayLeft": "总天数",
-            "curDayLeft": "剩余天数",
-            "isPaid": "是否已还",
-            "unlocked": "是否解锁",
-            "interestRate": "利率(%)",
-        }
-        self.debt_table._header_map = self._debt_headers
-        self._table_keys["Debt"] = self.debt_table
-        hint = QLabel("💡 双击单元格编辑数值。【是否已还/是否解锁】点击勾选切换。保存时写入存档。")
-        hint.setObjectName("Hint")
-        lay.addWidget(hint)
-
-        # === 剧情解锁 ===
+        """合并页：银行还款 / 剧情与任务解锁 / 教程解锁 占用小，合并为单页。"""
         lay = QVBoxLayout(self.tab_story)
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(8)
 
-        title = QLabel("📖 剧情 & 任务解锁")
-        title.setObjectName("CardTitle")
-        lay.addWidget(title)
+        def section(title_txt):
+            t = QLabel(title_txt)
+            t.setObjectName("CardTitle")
+            lay.addWidget(t)
 
-        bar = QHBoxLayout()
-        bar.setSpacing(8)
-        b1 = QPushButton("🎁 一键解锁全部剧情")
-        b2 = QPushButton("♻️ 重置剧情进度")
-        b2.setObjectName("Ghost")
-        b1.clicked.connect(self._story_unlock_all)
-        b2.clicked.connect(self._story_reset)
-        bar.addWidget(b1)
-        bar.addWidget(b2)
-        bar.addStretch(1)
+        # === 银行还款管理 ===
+        section("🏦 银行还款管理")
+        bar = QHBoxLayout(); bar.setSpacing(8)
+        b1 = QPushButton("🎁 一键全还清"); b1.clicked.connect(self._debt_clear_all)
+        b2 = QPushButton("🔓 一键解锁债务"); b2.clicked.connect(self._debt_unlock_all)
+        b3 = QPushButton("♻️ 重置债务"); b3.setObjectName("Ghost"); b3.clicked.connect(self._debt_reset)
+        bar.addWidget(b1); bar.addWidget(b2); bar.addWidget(b3); bar.addStretch(1)
         lay.addLayout(bar)
+        self.debt_table = self._build_list_editor(lay)
+        self.debt_table.setMaximumHeight(240)
+        self._debt_headers = {
+            "paidAmount": "已还金额", "curAmount": "当前金额", "dayLeft": "总天数",
+            "curDayLeft": "剩余天数", "isPaid": "是否已还", "unlocked": "是否解锁",
+            "interestRate": "利率(%)", }
+        self.debt_table._header_map = self._debt_headers
+        self._table_keys["Debt"] = self.debt_table
+        hint = QLabel("💡 双击编辑数值；【是否已还/是否解锁】点击勾选切换。")
+        hint.setObjectName("Hint"); lay.addWidget(hint)
 
+        # === 剧情 & 任务解锁 ===
+        section("📖 剧情 & 任务解锁")
+        bar = QHBoxLayout(); bar.setSpacing(8)
+        b1 = QPushButton("🎁 一键解锁全部剧情"); b1.clicked.connect(self._story_unlock_all)
+        b2 = QPushButton("♻️ 重置剧情进度"); b2.setObjectName("Ghost"); b2.clicked.connect(self._story_reset)
+        bar.addWidget(b1); bar.addWidget(b2); bar.addStretch(1)
+        lay.addLayout(bar)
         self.story_table = self._build_list_editor(lay)
+        self.story_table.setMaximumHeight(240)
         self._story_headers = {
-            "id": "剧情索引",
-            "currentProgress": "当前进度",
-            "unlockProgress": "解锁所需",
-            "isCompleted": "是否完成",
-            "unlocked": "是否解锁",
-        }
+            "id": "剧情索引", "currentProgress": "当前进度", "unlockProgress": "解锁所需",
+            "isCompleted": "是否完成", "unlocked": "是否解锁", }
         self.story_table._header_map = self._story_headers
         self.story_table._readonly_cols = ("id",)
         self._table_keys["MissionProgress"] = self.story_table
-        hint = QLabel("💡 【解锁所需/当前进度】可直接编辑实现任务完成。【是否完成/是否解锁】点击勾选切换。保存时写入存档。")
-        hint.setObjectName("Hint")
-        lay.addWidget(hint)
+        hint = QLabel("💡 【解锁所需/当前进度】可直接编辑完成；勾选切换【是否完成/是否解锁】。")
+        hint.setObjectName("Hint"); lay.addWidget(hint)
 
         # === 教程解锁 ===
-        lay = QVBoxLayout(self.tab_tutorial)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(8)
-
-        title = QLabel("🎓 教程解锁")
-        title.setObjectName("CardTitle")
-        lay.addWidget(title)
-
-        bar = QHBoxLayout()
-        bar.setSpacing(8)
-        b1 = QPushButton("🎁 一键解锁全部教程")
-        b2 = QPushButton("♻️ 重置教程状态")
-        b2.setObjectName("Ghost")
-        b1.clicked.connect(self._tutorial_unlock_all)
-        b2.clicked.connect(self._tutorial_reset)
-        bar.addWidget(b1)
-        bar.addWidget(b2)
-        bar.addStretch(1)
+        section("🎓 教程解锁")
+        bar = QHBoxLayout(); bar.setSpacing(8)
+        b1 = QPushButton("🎁 一键解锁全部教程"); b1.clicked.connect(self._tutorial_unlock_all)
+        b2 = QPushButton("♻️ 重置教程状态"); b2.setObjectName("Ghost"); b2.clicked.connect(self._tutorial_reset)
+        bar.addWidget(b1); bar.addWidget(b2); bar.addStretch(1)
         lay.addLayout(bar)
-
         self.tutorial_table = self._build_list_editor(lay)
-        self._tutorial_headers = {
-            "index": "教程索引",
-            "unlocked": "是否解锁",
-        }
+        self.tutorial_table.setMaximumHeight(240)
+        self._tutorial_headers = {"index": "教程索引", "unlocked": "是否解锁", }
         self.tutorial_table._header_map = self._tutorial_headers
         self.tutorial_table._readonly_cols = ("index",)
         self._table_keys["TutorialSaveData"] = self.tutorial_table
-        hint = QLabel("💡 【是否解锁】点击勾选切换。教程索引列只读。保存时写入存档。")
-        hint.setObjectName("Hint")
-        lay.addWidget(hint)
+        hint = QLabel("💡 点击【是否解锁】勾选切换；教程索引列只读。")
+        hint.setObjectName("Hint"); lay.addWidget(hint)
 
     # ---------- 银行/剧情/教程 一键操作 ----------
     def _debt_clear_all(self):
@@ -1898,6 +1888,23 @@ class ES3Editor(QMainWindow):
             self.worker_entries[key] = e
         pv.addLayout(grid)
 
+        # 职业下拉框（对应存档 npcRoleId）
+        role_f = QFrame()
+        role_f.setObjectName("FieldBox")
+        role_fv = QVBoxLayout(role_f)
+        role_fv.setContentsMargins(10, 6, 10, 6)
+        role_fv.setSpacing(4)
+        role_lb = QLabel("💼 职业")
+        role_lb.setObjectName("Muted")
+        self.role_combo = QComboBox()
+        self.role_combo.setFixedHeight(32)
+        for rid in sorted(_ROLE_NAME.keys()):
+            self.role_combo.addItem(_ROLE_NAME[rid], rid)
+        self.role_combo.currentIndexChanged.connect(self.on_worker_role_changed)
+        role_fv.addWidget(role_lb)
+        role_fv.addWidget(self.role_combo)
+        pv.addWidget(role_f)
+
         # 复选框
         chkrow = QHBoxLayout()
         self.cb_tamed = QCheckBox("✅ 已驯服")
@@ -1941,6 +1948,7 @@ class ES3Editor(QMainWindow):
         return None
 
     def es3_set(self, key, value):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         d = self.data
         if not isinstance(d, dict):
             return
@@ -2112,6 +2120,7 @@ class ES3Editor(QMainWindow):
             self.log(f"❌ 打开失败: {e}")
 
     def save_file(self):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         if not self.file_path or self.data is None:
             QMessageBox.warning(self, "未打开文件", "请先打开一个存档文件！")
             return
@@ -2437,6 +2446,18 @@ class ES3Editor(QMainWindow):
         for k in ("sickValue", "starveValue", "thirstValue", "sanityValue", "tameProgress"):
             self.worker_entries[k].setText(str(worker.get(k, 0)))
 
+        # 职业
+        role_id = npc.get("npcRoleId", 0)
+        role_id = int(role_id) if role_id not in (None, "") else 0
+        idx = self.role_combo.findData(role_id)
+        self.role_combo.blockSignals(True)
+        if idx >= 0:
+            self.role_combo.setCurrentIndex(idx)
+        else:
+            self.role_combo.addItem(f"未知职业({role_id})", role_id)
+            self.role_combo.setCurrentIndex(self.role_combo.count() - 1)
+        self.role_combo.blockSignals(False)
+
         # 复选框
         self.cb_tamed.blockSignals(True)
         self.cb_dead.blockSignals(True)
@@ -2444,6 +2465,17 @@ class ES3Editor(QMainWindow):
         self.cb_dead.setChecked(safe_bool(worker.get("isDead", False)))
         self.cb_tamed.blockSignals(False)
         self.cb_dead.blockSignals(False)
+
+    def on_worker_role_changed(self):
+        """职业下拉框变更：将选中职业 id 写入当前工人的 npcRoleId。"""
+        w = self.current_worker_dict()
+        if w is None:
+            return
+        rid = self.role_combo.currentData()
+        npc = w.setdefault("npcDataRole", {})
+        if not isinstance(npc, dict):
+            npc = w["npcDataRole"] = {}
+        npc["npcRoleId"] = int(rid)
 
     def current_worker_dict(self):
         if self.current_worker is None or self.current_worker >= len(self.workers):
@@ -2495,6 +2527,7 @@ class ES3Editor(QMainWindow):
         w["isDead"] = self.cb_dead.isChecked()
 
     def max_all_workers(self):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         if not self.workers:
             return
         try:
@@ -2546,7 +2579,8 @@ class ES3Editor(QMainWindow):
             self.log(f"❌ 重置失败: {e}")
 
     def copy_worker(self):
-        """复制当前选中的员工。新员工 ID 重新生成（随机或按新名字计算），
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
+        """复制当前选中的员工。新员工 ID 统一随机生成，
         避免与原件 ID 冲突；复制后仅改内存(self.workers + 列表)，需点【保存】写盘。"""
         src = self.current_worker_dict()
         if src is None or not isinstance(src, dict):
@@ -2569,11 +2603,7 @@ class ES3Editor(QMainWindow):
         form.addWidget(QLabel("新名字(留空=沿用原名)"), 1, 0)
         name_edit = QLineEdit(); name_edit.setPlaceholderText(f"{base_name}")
         form.addWidget(name_edit, 1, 1)
-        form.addWidget(QLabel("ID 生成方式"), 2, 0)
-        combo = QComboBox()
-        combo.addItem("随机生成 (不冲突)")
-        combo.addItem("按名字生成 (同名同ID)")
-        form.addWidget(combo, 2, 1)
+        # 新员工 ID 固定随机生成（不冲突），仅此一种方式
         lay.addLayout(form)
 
         btns = QHBoxLayout()
@@ -2591,7 +2621,6 @@ class ES3Editor(QMainWindow):
 
         n = spin.value()
         name_or_empty = name_edit.text().strip()
-        by_name = combo.currentIndex() == 1
         added = 0
         for i in range(n):
             cp = copy.deepcopy(src)
@@ -2602,10 +2631,7 @@ class ES3Editor(QMainWindow):
             if not isinstance(npc, dict):
                 npc = cp["npcDataRole"] = {}
             npc["npcName"] = nm
-            if by_name:
-                cp["id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, nm))
-            else:
-                cp["id"] = str(uuid.uuid4())
+            cp["id"] = str(uuid.uuid4())   # 新员工 ID 随机生成
             # 新员工未放置/未生成，避免直接卡在原本位置
             cp["isSpawned"] = False
             self.workers.append(cp)
@@ -2614,9 +2640,97 @@ class ES3Editor(QMainWindow):
         self.refresh_worker_list()
         self.worker_list.setCurrentRow(len(self.workers) - 1)   # 选中最前端一个副本
         self.count_lbl.setText(f"共 {len(self.workers)} 个工人")
-        self.log(f"📋 已复制 {added} 个员工（{'按名字生成ID' if by_name else '随机ID'}）。"
+        self.log(f"📋 已复制 {added} 个员工（随机ID）。"
                  "记得点【保存】写盘生效。")
         self.status_lbl.setText(f"已复制 {added} 个员工，记得点【保存】写盘生效。")
+
+    # ==================== 恢复备份 ====================
+    def restore_backup(self):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
+        """一键恢复：从 ES3_Backups 中选择一个备份覆盖当前存档并重新加载。"""
+        if not self.file_path:
+            QMessageBox.information(self, "恢复备份", "请先打开一个存档，再恢复其备份。")
+            return
+        backup_dir = os.path.join(os.path.dirname(self.file_path), "ES3_Backups")
+        if not os.path.isdir(backup_dir):
+            QMessageBox.information(self, "恢复备份", "未找到备份目录\n" + backup_dir)
+            return
+        base = os.path.basename(self.file_path)
+        prefixes = (base + ".backup_", base + ".backup_save_")
+        try:
+            backups = [f for f in os.listdir(backup_dir)
+                       if f.startswith(prefixes)
+                       and os.path.isfile(os.path.join(backup_dir, f))]
+            backups.sort(key=lambda f: os.path.getmtime(os.path.join(backup_dir, f)),
+                         reverse=True)
+        except Exception as e:
+            QMessageBox.critical(self, "读取备份失败", f"错误: {e}")
+            return
+        if not backups:
+            QMessageBox.information(self, "恢复备份",
+                                    f"未找到 {base} 的备份文件。\n"
+                                    f"打开/保存存档时会自动生成备份。")
+            return
+        picked = self._pick_backup_dialog(backups, backup_dir)
+        if not picked:
+            return
+        src = os.path.join(backup_dir, picked)
+        ans = QMessageBox.question(
+            self, "确认恢复",
+            f"将使用备份\n{picked}\n\n"
+            f"覆盖当前存档并重新加载。\n当前存档若有未保存改动将丢失，是否继续？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ans != QMessageBox.Yes:
+            return
+        try:
+            shutil.copy2(src, self.file_path)
+            with open(self.file_path, "r", encoding="utf-8") as f:
+                self.data = json.load(f)
+            self.parse_data_to_ui()
+            self.setWindowTitle(f"诈骗园区模拟器 - 存档修改器  —  {base}")
+            self.status_lbl.setText(f"♻️ 已恢复备份: {base}")
+            self.log(f"✅ 已从备份恢复: {picked}")
+            QMessageBox.information(self, "恢复完成",
+                                    f"已从备份恢复：\n{picked}")
+        except Exception as e:
+            QMessageBox.critical(self, "恢复失败", f"错误: {e}")
+            self.log(f"❌ 恢复失败: {e}")
+
+    def _pick_backup_dialog(self, backups, backup_dir):
+        """列出备份文件，返回用户选中的文件名；取消返回 None。"""
+        from PySide6.QtWidgets import QDialog
+        import datetime as _dt
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"选择备份（共 {len(backups)} 个）")
+        dlg.resize(640, 440)
+        lay = QVBoxLayout(dlg)
+        hint = QLabel("按生成时间倒序。双击或选中后点【恢复】执行：")
+        hint.setObjectName("Hint")
+        lay.addWidget(hint)
+
+        listw = QListWidget()
+        for f in backups:
+            p = os.path.join(backup_dir, f)
+            mtime = _dt.datetime.fromtimestamp(os.path.getmtime(p)).strftime("%Y-%m-%d %H:%M:%S")
+            it = QListWidgetItem(f"{f}   ——   {mtime}")
+            it.setToolTip(p)
+            it.setData(Qt.UserRole, f)
+            listw.addItem(it)
+        listw.setCurrentRow(0)
+        listw.itemDoubleClicked.connect(lambda _: dlg.accept())
+        lay.addWidget(listw, 1)
+
+        btn_ok = QPushButton("恢复")
+        btn_cancel = QPushButton("取消"); btn_cancel.setObjectName("Ghost")
+        btn_ok.clicked.connect(dlg.accept)
+        btn_cancel.clicked.connect(dlg.reject)
+        h = QHBoxLayout(); h.addStretch(1)
+        h.addWidget(btn_cancel); h.addWidget(btn_ok)
+        lay.addLayout(h)
+
+        if dlg.exec() and listw.currentItem():
+            return listw.currentItem().data(Qt.UserRole)
+        return None
 
     # ==================== 备份目录 ====================
     def open_backup_dir(self):

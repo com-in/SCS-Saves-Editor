@@ -2,8 +2,11 @@ name: 构建测试
 
 on:
   push:
+    # 除“指定版本号标签(v1.x.y，归发布流程)”外的所有推送——任意分支、非版本标签——一律进入测试构建，仅产测试产物不发布
     branches:
-      - main
+      - "**"
+    tags:
+      - "!v*.*.*"
   workflow_dispatch:
 
 jobs:
