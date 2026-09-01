@@ -241,7 +241,7 @@ def safe_bool(val):
 # ==================== 升级项配置（按内部英文名匹配） ====================
 # 存档 Upgrade 数组即 [{name, level}, ...]，name 是游戏内部英文名。
 # 为避免"升级丢失"，绝不改 name，只对映射到的项按 name 作为唯一标识：
-#   中文显示名, 最高等级上限。未在映射里的项（如 Upgrade / Tame Speed）一律不改动。
+#   中文显示名, 最高等级上限。未在映射里的项（如 Upgrade）一律不改动。
 UPGRADE_MAP = {
     "Cleaner": ("清洁工具", 1),
     "Scam Sticker": ("诈骗广告贴纸", 5),
@@ -250,7 +250,9 @@ UPGRADE_MAP = {
     "Stamina": ("耐力", 3),
     "Hit Power": ("击倒力量", 4),
     "Electricity Capacity": ("电力容量", 6),
+    "Whip": ("鞭子", 4),
     "Weapon": ("武器", 4),
+    "Tame Speed": ("驯服速度", 4),
     "Backyard": ("后院", 4),
     "Pickup Number": ("接送数量", 4),
     "Automatic Capture Service": ("自动抓捕", 3),
@@ -2362,7 +2364,11 @@ class ES3Editor(QMainWindow):
         self.es3_set("Level", safe_int(self.entry_basic["level"].text()))
         self.es3_set("Exp", safe_int(self.entry_basic["exp"].text()))
         self.es3_set("Day", safe_int(self.entry_basic["days"].text()))
-        self.es3_set("Electricity", safe_int(self.entry_basic["electricity"].text()))
+        _elec = safe_int(self.entry_basic["electricity"].text())
+        if _elec > 3200:  # 电力存档上限 3200，超限自动纠正
+            _elec = 3200
+            self.entry_basic["electricity"].setText("3200")
+        self.es3_set("Electricity", _elec)
         self.es3_set("ShopName", self.entry_basic["shopName"].text())
         self.es3_set("CallData", safe_int(self.entry_basic["callData"].text(), -1))
         self.es3_set("Difficulty", safe_int(self.entry_basic["difficulty"].text(), 1))
@@ -2384,7 +2390,7 @@ class ES3Editor(QMainWindow):
 
         # 升级（表格列: 名称[只读]/等级）：
         # 只读名称列不写回；仅当该升级项（按内部英文名）在配置中时，才对等级做上限钳制并写回。
-        # 未配置的升级项（如 Upgrade / Tame Speed）保留原样，杜绝"升级丢失"。
+        # 未配置的升级项（如 Upgrade）保留原样，杜绝"升级丢失"。
         uarr = self.es3_get("Upgrade")
         if isinstance(uarr, list):
             # 先按内部英文名收集界面各行的等级（避免依赖行号与数组下标一一对应）
@@ -2522,6 +2528,8 @@ class ES3Editor(QMainWindow):
             if not isinstance(u, dict):
                 continue
             eng = str(u.get("name", ""))
+            if eng == "Upgrade":  # 存档里名为 Upgrade 的特殊项已废弃，不显示不修改
+                continue
             setup = _upgrade_setup(eng)
             row = self.upgrade_table.rowCount()
             self.upgrade_table.insertRow(row)
@@ -2748,7 +2756,7 @@ class ES3Editor(QMainWindow):
                 w["sickValue"] = 0
                 w["starveValue"] = 0
                 w["thirstValue"] = 0
-                w["sanityValue"] = 999.0
+                w["sanityValue"] = 0  # 理智值 0=理智满；>=sanityDuration(约40~60)才会发疯，原999会必疯
                 w["tameProgress"] = 100
                 w["isTamed"] = True
                 w["isDead"] = False
