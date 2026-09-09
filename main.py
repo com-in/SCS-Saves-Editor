@@ -22,6 +22,9 @@ import uuid
 import threading
 from datetime import datetime
 
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QUrl
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QLineEdit, QListWidget, QTextEdit, QPlainTextEdit,
@@ -36,6 +39,7 @@ from PySide6.QtCore import Qt, QVariantAnimation, QEasingCurve, QTimer, QSize, Q
 from _memscan import MemScanner, find_game_process
 from _role_data import ROLE_NAME as _ROLE_NAME  # 员工职业 id->中文名 映射（混淆数据）
 from _item_data import USER_ITEM_NAME as _ITEM_NAME  # 物品 id->中文名 映射（混淆数据）
+from _extra_pages import ExtraPagesMixin
 
 # ==================== 主题配置 ====================
 # 默认亮色
@@ -320,7 +324,7 @@ class _MemScanWorker(QThread):
             self.failed.emit(str(e))
 
 
-class ES3Editor(QMainWindow):
+class ES3Editor(ExtraPagesMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("诈骗园区模拟器 - 存档修改器")
@@ -383,6 +387,11 @@ class ES3Editor(QMainWindow):
         if app is not None:
             app.setStyleSheet(build_qss(dst_theme))
 
+    def _open_sponsor(self):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
+        QDesktopServices.openUrl(QUrl("https://afdian.com/a/ctoy_p"))
+        self.set_status("✅ 已为你打开赞助页，感谢支持！")
+
     def set_status(self, text):
         self.status_lbl.setText(text)
 
@@ -413,7 +422,12 @@ class ES3Editor(QMainWindow):
             ("📦", "物品", "items"),
             ("🏗️", "放置物品", "placed"),
             ("⬆️", "升级", "upgrade"),
-            ("🔬", "内存 BETA", "memory"),
+            ("📈", "成长进度", "growth"),
+            ("🛒", "人口采购", "purchase"),
+            ("🏛️", "市政管理", "municipal"),
+            ("🛋️", "店面装修", "interior"),
+            ("🗂️", "其他数据", "adata"),
+            ("🔬", "内存 BYCT", "memory"),
             ("🔓", "解锁管理", "unlock"),
             ("⚙️", "其他", "other"),
         ]
@@ -432,12 +446,19 @@ class ES3Editor(QMainWindow):
         self.nav_list.itemClicked.connect(self.on_nav_item_clicked)
         sb.addWidget(self.nav_list, 1)
 
-        # 左下角：设置（主题切换）
+        # 左下角：主题切换 + 赞助（横向并排）
         self._action_theme = QPushButton("☀️ 亮色模式")
         self._action_theme.setObjectName("Ghost")
         self._action_theme.clicked.connect(
             lambda: self.apply_theme("light" if self.theme == "dark" else "dark"))
-        sb.addWidget(self._action_theme)
+        self._action_sponsor = QPushButton("❤️ 赞助")
+        self._action_sponsor.setObjectName("Ghost")
+        self._action_sponsor.setToolTip("支持作者，打开赞助页")
+        self._action_sponsor.clicked.connect(self._open_sponsor)
+        _social = QHBoxLayout(); _social.setSpacing(6)
+        _social.addWidget(self._action_theme, 1)
+        _social.addWidget(self._action_sponsor, 1)
+        sb.addLayout(_social)
 
         self.sidebar.setFixedWidth(212)
 
@@ -493,12 +514,19 @@ class ES3Editor(QMainWindow):
         self.tab_items = QWidget()
         self.tab_placed = QWidget()
         self.tab_upgrade = QWidget()
+        self.tab_growth = QWidget()
+        self.tab_purchase = QWidget()
+        self.tab_municipal = QWidget()
+        self.tab_interior = QWidget()
+        self.tab_adata = QWidget()
         self.tab_memory = QWidget()
         self.tab_story = QWidget()   # 合并页：银行还款 / 剧情解锁 / 教程解锁
         self.tab_other = QWidget()
 
         for page in (self.tab_basic, self.tab_workers, self.tab_crypto,
                      self.tab_items, self.tab_placed, self.tab_upgrade,
+                     self.tab_growth, self.tab_purchase, self.tab_municipal,
+                     self.tab_interior, self.tab_adata,
                      self.tab_memory, self.tab_story, self.tab_other):
             self.stack.addWidget(page)
         rv.addWidget(self.stack, 1)
@@ -521,6 +549,7 @@ class ES3Editor(QMainWindow):
         self.build_memory_tab()
         self.build_json_tab()  # 物品/放置/其他
         self.build_debt_story_tutorial_tabs()  # 银行债务/剧情解锁/教程解锁
+        self.build_extra_tabs()  # 新增解包项：成长/采购/市政/装修/其他数据
 
         self.statusBar = QStatusBar()
         self.setStatusBar(self.statusBar)
@@ -1748,6 +1777,15 @@ class ES3Editor(QMainWindow):
                     cell = QTableWidgetItem(self._cell_to_text(v))
                     if readonly:
                         cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
+                    # 显示汉化：命中映射时显示中文，原始值存 UserRole 供保存回写
+                    disp = getattr(table, "_display_cn", None)
+                    if disp:
+                        cn = disp.get(spec["path"][0])
+                        if cn is not None:
+                            key = str(v) if not isinstance(v, (int, float)) else int(v)
+                            if key in cn:
+                                cell.setText(cn[key])
+                                cell.setData(Qt.UserRole, v)
                 table.setItem(r, c, cell)
         table.resizeColumnsToContents()
         table.blockSignals(False)
@@ -1797,8 +1835,12 @@ class ES3Editor(QMainWindow):
                 if spec["type"] == "bool" and it is not None:
                     val = (it.checkState() == Qt.Checked)
                 else:
-                    text = it.text() if it is not None else ""
-                    val = self._text_to_cell(text, spec["type"])
+                    raw = it.data(Qt.UserRole) if it is not None else None
+                    if raw is not None:
+                        val = raw
+                    else:
+                        text = it.text() if it is not None else ""
+                        val = self._text_to_cell(text, spec["type"])
                 self._set_path(d, spec["path"], val)
             out.append(d)
         return out
@@ -2421,6 +2463,8 @@ class ES3Editor(QMainWindow):
         # 工人已实时写回 workers，无需再次写（但确保整段写回）
         if self.workers is not None:
             self.es3_set("Workers", self.workers)
+        # 新增解包项：定制表单/高风险项写回
+        self.save_extra_to_data()
 
     def merge_json_tabs(self):
         """把物品/放置物品列表表格、"其他"页编辑器 合并写入 data。"""
@@ -2500,6 +2544,7 @@ class ES3Editor(QMainWindow):
         self._render_other_key()
 
         # 工人
+        self.load_extra_ui()
         self.load_workers()
 
     # ---------- 加密货币 ----------
