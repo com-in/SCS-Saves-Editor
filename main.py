@@ -34,18 +34,21 @@ from PySide6.QtWidgets import (
     QStackedWidget, QListWidgetItem, QSizePolicy, QComboBox, QDialog, QSpinBox,
 )
 from PySide6.QtGui import QFont, QIcon, QColor, QPixmap
-from PySide6.QtCore import Qt, QVariantAnimation, QEasingCurve, QTimer, QSize, QThread, Signal, QSettings
+from PySide6.QtCore import Qt, QSignalBlocker, QVariantAnimation, QEasingCurve, QTimer, QSize, QThread, Signal, QSettings
 
 from _memscan import MemScanner, find_game_process
 from _role_data import ROLE_NAME as _ROLE_NAME  # 员工职业 id->中文名 映射（混淆数据）
 from _item_data import USER_ITEM_NAME as _ITEM_NAME  # 物品 id->中文名 映射（混淆数据）
 from _extra_pages import ExtraPagesMixin
+from _document import DocumentMixin
+from _editor_ui import EditorUiMixin
+from _save_support import number, integer_list, validate_document, validate_changes, atomic_write
 
 # ==================== 主题配置 ====================
 # 默认亮色
 BG_COLOR = "#f5f6fa"
-CARD_BG = "#f5f6fa"      # 与程序背景一致，层次靠边框体现
-ENTRY_BG = "#f5f6fa"      # 与程序背景一致
+CARD_BG = "#ffffff"
+ENTRY_BG = "#ffffff"
 TEXT_COLOR = "#24273a"
 TEXT_SECOND = "#5b6080"
 ACCENT = "#3b82f6"
@@ -73,8 +76,8 @@ LIGHT_THEME = {
 # 暗色主题（深色下编辑框背景与程序背景保持一致）
 DARK_THEME = {
     "BG_COLOR": "#1e1e2e",
-    "CARD_BG": "#1e1e2e",
-    "ENTRY_BG": "#1e1e2e",
+    "CARD_BG": "#272a3d",
+    "ENTRY_BG": "#222537",
     "TEXT_COLOR": "#cdd6f4",
     "TEXT_SECOND": "#a6adc8",
     "ACCENT": "#89b4fa",
@@ -85,25 +88,37 @@ DARK_THEME = {
     "BORDER": "#313244",
 }
 
+# ==================== UI 统一规范常量 ====================
+ROUNDED_CORNER = 10      # 卡片/面板统一圆角半径(px)
+PAGE_MARGIN = 16         # 页面统一内容边距(px)
+SECTION_SPACING = 12     # 页面内节/元素统一间距(px)
+TABLE_FIXED_HEIGHT = 220 # 列表表格统一最大高度(px)
+
 def build_qss(theme):
     """根据主题字典生成完整 QSS，避免各处内联散落样式"""
     BG = theme["BG_COLOR"]; CARD = theme["CARD_BG"]; ENTRY = theme["ENTRY_BG"]
     T = theme["TEXT_COLOR"]; TS = theme["TEXT_SECOND"]
     ACC = theme["ACCENT"]; ACH = theme["ACCENT_HOVER"]
     S = theme["SUCCESS"]; W = theme["WARNING"]; D = theme["DANGER"]; BD = theme["BORDER"]
+    RC = ROUNDED_CORNER  # 统一圆角半径
     return f"""
 * {{ font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; }}
 QMainWindow {{ background: {BG}; }}
 QWidget {{ background: {BG}; color: {T}; font-size: 13px; }}
+QWidget#ValueRow {{ background: transparent; }}
 QLabel {{ background: transparent; }}
 QLabel#CardTitle {{ color: {T}; font-weight: bold; font-size: 14px; }}
 QLabel#Hint {{ color: {W}; font-size: 12px; }}
+QLabel#PageTitle {{ color: {T}; font-size: 20px; font-weight: bold; }}
+QLabel#PageSub {{ color: {TS}; font-size: 12px; }}
 QLabel#Muted {{ color: {TS}; font-size: 12px; }}
 QLabel#SideTitle {{ color: {T}; font-weight: bold; font-size: 15px; }}
+QLabel#WelcomeTitle {{ color: {T}; font-size: 26px; font-weight: bold; }}
+QLabel#SectionTitle {{ color: {T}; font-weight: bold; font-size: 14px; }}
 
 QLineEdit, QPlainTextEdit, QTextEdit {{
     background: {ENTRY}; color: {T};
-    border: 1px solid {BD}; border-radius: 6px;
+    border: 1px solid {BD}; border-radius: {RC}px;
     padding: 6px 8px; selection-background-color: {ACC};
 }}
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {{ border: 1px solid {ACC}; }}
@@ -118,9 +133,15 @@ QPushButton:disabled {{ background: {BD}; color: {TS}; }}
 QPushButton#Danger {{ background: {D}; }}
 QPushButton#Ghost {{ background: {CARD}; color: {T}; border: 1px solid {BD}; }}
 QPushButton#Ghost:hover {{ border: 1px solid {ACC}; }}
+QPushButton#WelcomeCard {{
+    background: {CARD}; color: {T}; border: 1px solid {BD};
+    border-radius: 12px; padding: 16px 18px; font-weight: bold;
+    font-size: 14px; text-align: left; min-height: 44px;
+}}
+QPushButton#WelcomeCard:hover {{ border: 1px solid {ACC}; background: {ENTRY}; }}
 QToolButton#Ghost {{ background: {CARD}; color: {T}; border: 1px solid {BD}; border-radius: 6px; }}
 QToolButton#Ghost:hover {{ border: 1px solid {ACC}; background: {ENTRY}; }}
-QToolButton#NavFold {{ background: {CARD}; color: {TS}; border: 1px solid {BD}; border-radius: 8px; padding: 0 10px; text-align: left; }}
+QToolButton#NavFold {{ background: {CARD}; color: {TS}; border: 1px solid {BD}; border-radius: {RC}px; padding: 0 10px; text-align: left; }}
 QToolButton#NavFold:hover {{ border: 1px solid {ACC}; color: {T}; background: {ENTRY}; }}
 
 QListWidget {{
@@ -131,24 +152,29 @@ QListWidget::item {{ padding: 8px 10px; border-radius: 4px; }}
 QListWidget::item:selected {{ background: {ACC}; color: {BG}; }}
 QListWidget::item:hover:!selected {{ background: {CARD}; }}
 
-QListWidget#Nav {{
-    background: {CARD}; border: 1px solid {BD}; border-radius: 8px;
+QTreeWidget#Nav {{
+    background: {CARD}; border: 1px solid {BD}; border-radius: {RC}px;
     padding: 6px; outline: 0; color: {T}; font-size: 13px;
 }}
-QListWidget#Nav::item {{
-    padding: 10px 12px; border-radius: 6px; margin: 2px 0;
+QTreeWidget#Nav::item {{
+    padding: 8px 10px; border-radius: {RC}px; margin: 1px 0;
 }}
-QListWidget#Nav::item:hover {{ background: {ENTRY}; }}
-QListWidget#Nav::item:selected {{
+QTreeWidget#Nav::item:hover {{ background: {ENTRY}; }}
+QTreeWidget#Nav::item:selected {{
     background: {ACC}; color: {BG}; font-weight: bold;
 }}
+QTreeWidget#Nav::branch {{ background: transparent; image: none; }}
 
+QLabel#MetricValue {{ font-size: 24px; font-weight: bold; color: {ACC}; }}
+QFrame#DocumentBar {{ background: {CARD}; border: 1px solid {BD}; border-radius: 10px; }}
+QLabel#DocumentBadge {{ color: {S}; background: {CARD}; border: 1px solid {BD}; border-radius: 10px; padding: 4px 10px; }}
+QLabel#DocumentBadge[dirty="true"] {{ color: {W}; border-color: {W}; }}
 QFrame#CardBox {{ background: {CARD}; border: 1px solid {BD}; border-radius: 8px; }}
 QFrame#FieldBox {{ background: {CARD}; border: 1px solid {BD}; border-radius: 6px; }}
 
 QTableWidget {{
     background: {ENTRY}; border: 1px solid {BD}; border-radius: 6px;
-    gridline-color: {BD}; selection-background-color: {ACC}; selection-color: {BG};
+    alternate-background-color: {BG}; gridline-color: {BD}; selection-background-color: {ACC}; selection-color: {BG};
 }}
 QHeaderView::section {{
     background: {CARD}; color: {T}; padding: 6px; border: none;
@@ -324,7 +350,7 @@ class _MemScanWorker(QThread):
             self.failed.emit(str(e))
 
 
-class ES3Editor(ExtraPagesMixin, QMainWindow):
+class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("诈骗园区模拟器 - 存档修改器")
@@ -334,12 +360,9 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         self.file_path = None
 
         # 主题
-        self.theme = "light"
+        self.theme = QSettings().value("ui/theme", "light")
         self._action_theme = None
         self._theme_anim = None
-        # 侧边栏
-        self.sidebar_collapsed = False
-        self._sidebar_anim = None
 
         # 基础数据控件引用
         self.entry_basic = {}
@@ -356,19 +379,25 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         self.cb_tamed = None
         self.cb_dead = None
 
+        self._loading = True
         self.build_ui()
+        self._loading = False
+        self.setup_editor_ui()
         self.log("程序已启动，请先打开 .es3 存档文件")
         # 默认全屏（窗口显示后立即最大化）
+        self.resize(1280, 840)
+        geometry = QSettings().value("ui/geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        # 启动时默认最大化，便于完整查看多页编辑器；用户仍可手动还原窗口。
         QTimer.singleShot(0, self.showMaximized)
 
     # ---------- 主题切换（带过渡动画） ----------
     def _apply_theme_button_text(self):
         """按钮提示可切换到的目标主题（当前亮色则提示切暗色）"""
-        if self.sidebar_collapsed:
-            self._action_theme.setText("🌙" if self.theme == "light" else "☀️")
-            self._action_theme.setToolTip("切换到暗色模式" if self.theme == "light" else "切换到亮色模式")
-        else:
-            self._action_theme.setText("🌙 暗色模式" if self.theme == "light" else "☀️ 亮色模式")
+        self._action_theme.setText("🌙 暗色模式" if self.theme == "light" else "☀️ 亮色模式")
+        self._action_sponsor.setText("❤️ 赞助")
+        self._action_sponsor.setToolTip("支持作者，打开赞助页")
 
     def apply_theme(self, name, immediate=False):
         """切换暗色/亮色主题（立即生效，无过渡动画）"""
@@ -378,6 +407,7 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         dst_theme = DARK_THEME if name == "dark" else LIGHT_THEME
         self.theme = name
         CURRENT_THEME = name
+        QSettings().setValue("ui/theme", name)
 
         # 更新主题按钮提示文字
         if self._action_theme is not None:
@@ -397,6 +427,25 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
 
     # ==================== 界面 ====================
     def build_ui(self):
+        # ========== 原生菜单栏：文件 ==========
+        _mb = self.menuBar()
+        self._file_menu = _mb.addMenu("文件(&F)")
+        _fmenu = self._file_menu
+        _fmenu.addAction("📂 打开存档").triggered.connect(self.open_file)
+        _fmenu.addAction("🔍 查找存档").triggered.connect(self.find_save_file)
+        _fmenu.addAction("💾 保存存档").triggered.connect(self.save_file)
+        _fmenu.addSeparator()
+        _fmenu.addAction("📋 备份目录").triggered.connect(self.open_backup_dir)
+        _fmenu.addAction("♻️ 恢复备份").triggered.connect(self.restore_backup)
+        _fmenu.addAction("📑 复制副本").triggered.connect(self.copy_save_file)
+        _fmenu.addSeparator()
+        _fmenu.addAction("💾 另存为").triggered.connect(self.save_file_as)
+        _fmenu.addAction("📤 导出 JSON").triggered.connect(self.export_json)
+        _fmenu.addAction("📥 导入 JSON").triggered.connect(self.import_json)
+        _fmenu.addAction("🆕 新建骨架").triggered.connect(self.new_save_skeleton)
+        _fmenu.addSeparator()
+        _fmenu.addAction("退出").triggered.connect(self.close)
+
         # ========== 左右布局 ==========
         # 左栏：导航菜单（标题 + 项 + 左下设置）
         self.sidebar = QWidget()
@@ -411,11 +460,15 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         self.side_title.setContentsMargins(4, 0, 0, 0)
         sb.addWidget(self.side_title)
 
-        self.nav_list = QListWidget()
+        self.nav_list = QTreeWidget()
         self.nav_list.setObjectName("Nav")
+        self.nav_list.setHeaderHidden(True)
+        self.nav_list.setRootIsDecorated(False)   # 隐藏顶层 group 的 branch 装饰空区（箭头已由文字自带）
+        self.nav_list.setIndentation(0)
         self.nav_list.setWordWrap(True)
         # nav_items: (图标, 文字, key)
         self.nav_items = [
+            ("🏠", "首页", "home"),
             ("📊", "基础数据", "basic"),
             ("👷", "工人", "workers"),
             ("💎", "加密货币", "crypto"),
@@ -426,7 +479,13 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
             ("🛒", "人口采购", "purchase"),
             ("🏛️", "市政管理", "municipal"),
             ("🛋️", "店面装修", "interior"),
-            ("🗂️", "其他数据", "adata"),
+            ("🛡️", "保镖状态", "bodyguard"),
+            ("🎓", "教程标记", "tutorial"),
+            ("📞", "来电队列", "schedule"),
+            ("🏆", "成就统计", "gamestats"),
+            ("🐱", "宠物猫", "cat"),
+            ("🚚", "配送点", "delivery"),
+            ("✈️", "机场队列", "airport"),
             ("🔬", "内存 BYCT", "memory"),
             ("🔓", "解锁管理", "unlock"),
             ("⚙️", "其他", "other"),
@@ -434,15 +493,51 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         self._nav_icons = [it[0] for it in self.nav_items]
         self._nav_labels = [it[1] for it in self.nav_items]
         self._nav_keys = [it[2] for it in self.nav_items]
-        for icon, label, _ in self.nav_items:
-            item = QListWidgetItem(f"{icon} {label}")
-            self.nav_list.addItem(item)
-        # 菜单内部最下面一行：折叠/展开侧边栏
-        self._fold_row = len(self._nav_keys)
-        self._fold_item = QListWidgetItem("◀ 折叠侧边栏")
-        self.nav_list.addItem(self._fold_item)
-        self.nav_list.setCurrentRow(0)
-        self.nav_list.currentRowChanged.connect(self.on_nav_change)
+        self._key_to_row = {k: i for i, k in enumerate(self._nav_keys)}
+        # 分组导航：组名 -> 该组所含 key（顺序沿用 _nav_keys，stack 页索引保持一致）
+        self._nav_groups = [
+            ("🏠 档案", ["basic", "workers", "crypto", "items", "placed", "upgrade"]),
+            ("🎮 游戏", ["growth", "purchase", "municipal", "interior",
+                        "bodyguard", "tutorial", "schedule", "gamestats",
+                        "cat", "delivery", "airport"]),
+            ("🔧 工具", ["memory", "unlock", "other"]),
+        ]
+        self._nav_leaves = []          # 叶子项，顺序 == stack 页索引
+        self._nav_group_items = []     # 分组头项
+        self._nav_group_glyphs = []    # 分组头图标（折叠/展开用）
+        # 首页独立置于所有分组之前
+        _home_row = self._key_to_row["home"]
+        _home_leaf = QTreeWidgetItem([f"{self._nav_icons[_home_row]} {self._nav_labels[_home_row]}"])
+        _home_leaf.setData(0, Qt.UserRole, _home_row)
+        self.nav_list.addTopLevelItem(_home_leaf)
+        self._nav_leaves.append(_home_leaf)
+        for gname, keys in self._nav_groups:
+            glyph, _, tail = gname.partition(" ")
+            g = QTreeWidgetItem([""])
+            g.setData(0, Qt.UserRole, -1)          # 分组头：不切换页
+            g.setData(0, Qt.UserRole + 1, tail)    # 组尾文字
+            g.setData(0, Qt.UserRole + 2, glyph)   # 组图标
+            self.nav_list.addTopLevelItem(g)
+            self._nav_group_items.append(g)
+            self._nav_group_glyphs.append(glyph)
+            for k in keys:
+                row = self._key_to_row[k]
+                leaf = QTreeWidgetItem([f"{self._nav_icons[row]} {self._nav_labels[row]}"])
+                leaf.setData(0, Qt.UserRole, row)   # 叶子：绑定 stack 页索引
+                g.addChild(leaf)
+                self._nav_leaves.append(leaf)
+            g.setExpanded(True)
+            self._nav_refresh_group_label(g)
+        # 分组头视觉：加粗 + 次级色 + 不可选中
+        _navf = QFont(self.nav_list.font())
+        _navf.setBold(True)
+        for g in self._nav_group_items:
+            g.setFont(0, _navf)
+            g.setForeground(0, QColor(TEXT_SECOND))
+            g.setFlags(g.flags() & ~Qt.ItemIsSelectable)
+        self.nav_list.setWordWrap(True)
+        self.nav_list.setCurrentItem(self._nav_leaves[0])
+        self.nav_list.itemSelectionChanged.connect(self.on_nav_change)
         self.nav_list.itemClicked.connect(self.on_nav_item_clicked)
         sb.addWidget(self.nav_list, 1)
 
@@ -468,46 +563,11 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         rv.setContentsMargins(8, 8, 8, 4)
         rv.setSpacing(6)
 
-        # 右侧上部：文件操作按钮组
-        btn_bar = QWidget()
-        bh = QHBoxLayout(btn_bar)
-        bh.setContentsMargins(4, 4, 4, 4)
-        bh.setSpacing(8)
-
-        btn_open = QPushButton("📂 打开存档")
-        btn_find = QPushButton("🔍 查找存档")
-        btn_save = QPushButton("💾 保存存档")
-        btn_backup = QPushButton("📋 备份目录")
-        btn_restore = QPushButton("♻️ 恢复备份")
-        btn_find.setObjectName("Ghost")
-        btn_save.setObjectName("Ghost")
-        btn_backup.setObjectName("Ghost")
-        btn_restore.setObjectName("Ghost")
-        btn_open.clicked.connect(self.open_file)
-        btn_find.clicked.connect(self.find_save_file)
-        btn_save.clicked.connect(self.save_file)
-        btn_backup.clicked.connect(self.open_backup_dir)
-        btn_restore.clicked.connect(self.restore_backup)
-        self.btn_backup = btn_backup
-
-        bh.addWidget(btn_open)
-        bh.addWidget(btn_find)
-        bh.addWidget(btn_save)
-        bh.addWidget(btn_backup)
-        bh.addWidget(btn_restore)
-        bh.addStretch(1)
-        # 复制按钮：与"打开存档"同行；仅选中"放置物品"页一行时显示
-        self.placed_copy_btn = QPushButton("📋 复制")
-        self.placed_copy_btn.setObjectName("Ghost")
-        self.placed_copy_btn.setVisible(False)
-        self.placed_copy_btn.clicked.connect(self._placed_copy_row)
-        bh.addWidget(self.placed_copy_btn)
-        rv.addWidget(btn_bar)
-
         # 右侧：内容栈
         self.stack = QStackedWidget()
 
         # 页面容器
+        self.tab_welcome = QWidget()
         self.tab_basic = QWidget()
         self.tab_workers = QWidget()
         self.tab_crypto = QWidget()
@@ -518,15 +578,23 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         self.tab_purchase = QWidget()
         self.tab_municipal = QWidget()
         self.tab_interior = QWidget()
-        self.tab_adata = QWidget()
+        self.tab_bodyguard = QWidget()
+        self.tab_tutorial = QWidget()
+        self.tab_schedule = QWidget()
+        self.tab_gamestats = QWidget()
+        self.tab_cat = QWidget()
+        self.tab_delivery = QWidget()
+        self.tab_airport = QWidget()
         self.tab_memory = QWidget()
         self.tab_story = QWidget()   # 合并页：银行还款 / 剧情解锁 / 教程解锁
         self.tab_other = QWidget()
 
-        for page in (self.tab_basic, self.tab_workers, self.tab_crypto,
+        for page in (self.tab_welcome, self.tab_basic, self.tab_workers, self.tab_crypto,
                      self.tab_items, self.tab_placed, self.tab_upgrade,
                      self.tab_growth, self.tab_purchase, self.tab_municipal,
-                     self.tab_interior, self.tab_adata,
+                     self.tab_interior,
+                     self.tab_bodyguard, self.tab_tutorial, self.tab_schedule,
+                     self.tab_gamestats, self.tab_cat, self.tab_delivery, self.tab_airport,
                      self.tab_memory, self.tab_story, self.tab_other):
             self.stack.addWidget(page)
         rv.addWidget(self.stack, 1)
@@ -550,6 +618,7 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         self.build_json_tab()  # 物品/放置/其他
         self.build_debt_story_tutorial_tabs()  # 银行债务/剧情解锁/教程解锁
         self.build_extra_tabs()  # 新增解包项：成长/采购/市政/装修/其他数据
+        self.build_welcome_tab()  # 首页：欢迎页 + 文件操作
 
         self.statusBar = QStatusBar()
         self.setStatusBar(self.statusBar)
@@ -560,19 +629,27 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         # 应用初始主题（即时，无动画）
         self.apply_theme(self.theme, immediate=True)
 
-    def on_nav_change(self, row):
-        # 折叠行不切换页面
-        if row >= len(self._nav_keys):
+    def on_nav_change(self):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
+        # 分组导航：叶子项选中时切换到对应 stack 页（索引绑定在 item data，分组不点偏）
+        it = self.nav_list.currentItem()
+        if it is None:
             return
+        row = it.data(0, Qt.UserRole)
+        if row is None or row < 0:
+            return                      # 分组头/折叠行，不切换
         self._last_page_row = row
         if 0 <= row < self.stack.count():
             self.stack.setCurrentIndex(row)
         self._maybe_show_mem_force_read(row)
 
-    def on_nav_item_clicked(self, item):
-        # 点击菜单最下面的折叠/展开行
-        if self.nav_list.row(item) == self._fold_row:
-            self.toggle_sidebar()
+    def on_nav_item_clicked(self, item, column=0):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
+        # 分组头：点击折叠/展开该组
+        tag = item.data(0, Qt.UserRole)
+        if tag == -1:
+            item.setExpanded(not item.isExpanded())
+            self._nav_refresh_group_label(item)
 
     def _maybe_show_mem_force_read(self, row):
         """进入『内存』页首次时弹强制阅读提示（带10s倒计时）。"""
@@ -599,7 +676,7 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
             "再<b>多次重复扫描</b>（点击【下一次扫描】按钮），"
             "直到每个字段只剩 1 个地址。")
         lb.setWordWrap(True)
-        lb.setStyleSheet("font-size: 13px; line-height: 150%;")
+        lb.setText("<p style=\"line-height:160%;\">" + lb.text().replace("\n", "<br>") + "</p>")
         lay.addWidget(lb)
 
         bot = QHBoxLayout(); bot.setSpacing(10)
@@ -631,79 +708,157 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         btn.clicked.connect(_accept)
         dlg.exec()
 
-    # ---------- 侧边栏折叠/展开 ----------
-    def toggle_sidebar(self):
-        self.sidebar_collapsed = not self.sidebar_collapsed
-        if self.sidebar_collapsed:
-            self.collapse_sidebar()
+
+
+    def _nav_refresh_group_label(self, g):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
+        # 分组头文本：展开=▾，折叠=▸；折叠侧边栏时仅显图标不加箭头。
+        glyph = g.data(0, Qt.UserRole + 2) or ""
+        tail = g.data(0, Qt.UserRole + 1) or ""
+        if g.isExpanded():
+            g.setText(0, f"▾ {glyph} {tail}")
+            g.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
         else:
-            self.expand_sidebar()
-        # 折叠行被选中会高亮，恢复回当前页的选中
-        self.nav_list.setCurrentRow(getattr(self, "_last_page_row", 0))
+            g.setText(0, f"▸ {glyph} {tail}")
+            g.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
 
-    def collapse_sidebar(self):
-        """折叠侧边栏：仅菜单折叠为图标（宽度收窄），标题保留"""
-        self.sidebar_collapsed = True
-        self._fold_item.setText("▶")
-        self._fold_item.setToolTip("展开侧边栏")
-        self._fold_item.setTextAlignment(Qt.AlignCenter)
-        self.side_title.setText(self._elide_title(58))
-        for i in range(len(self._nav_keys)):
-            self.nav_list.item(i).setText(self._nav_icons[i])
-            self.nav_list.item(i).setTextAlignment(Qt.AlignCenter)
-        self.nav_list.setWordWrap(False)
-        self._apply_theme_button_text()
-        self._sidebar_apply_width(90)
-
-    def expand_sidebar(self):
-        """展开侧边栏，显示图标 + 文字"""
-        self.sidebar_collapsed = False
-        self._fold_item.setText("◀ 折叠侧边栏")
-        self._fold_item.setToolTip("折叠侧边栏")
-        self._fold_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.side_title.setText("💾 ES3 存档修改器")
-        for i in range(len(self._nav_keys)):
-            self.nav_list.item(i).setText(f"{self._nav_icons[i]} {self._nav_labels[i]}")
-            self.nav_list.item(i).setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.nav_list.setWordWrap(True)
-        self._apply_theme_button_text()
-        self._sidebar_apply_width(212)
-
-    def _elide_title(self, max_width):
-        """标题在窄侧栏下省略号截断，避免被撑宽"""
-        from PySide6.QtGui import QFontMetrics
-        fm = QFontMetrics(self.side_title.font())
-        return fm.elidedText("💾 ES3 存档修改器", Qt.ElideRight, max_width)
-
-    def _sidebar_apply_width(self, target):
-        """侧边栏宽度过渡动画（完成后固定目标宽度）"""
-        # 若窗口尚未布局完成，直接跳到目标宽度，避免动画起点错误
-        if not self.isVisible() or self.sidebar.width() <= 0:
-            self.sidebar.setFixedWidth(target)
-            self._sb_layout.setContentsMargins(6 if target < 120 else 10, 14, 6 if target < 120 else 10, 14)
-            return
-        start = self.sidebar.width()
-
-        def on_frame(t):
-            w = int(start + (target - start) * t)
-            self.sidebar.setFixedWidth(w)
-            self._sb_layout.setContentsMargins(6 if w < 120 else 10, 14, 6 if w < 120 else 10, 14)
-
-        def on_done():
-            self.sidebar.setFixedWidth(target)
-            self._sb_layout.setContentsMargins(6 if target < 120 else 10, 14, 6 if target < 120 else 10, 14)
-
-        anim = QVariantAnimation(self)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.setDuration(260)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.valueChanged.connect(on_frame)
-        anim.finished.connect(on_done)
-        anim.start()
-        self._sidebar_anim = anim
+    # ---------- 统一页面页头 ----------
+    def _page_header(self, layout, title, sub=""):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
+        bar = QWidget()
+        b = QVBoxLayout(bar)
+        b.setContentsMargins(4, 2, 4, 8)
+        b.setSpacing(2)
+        t = QLabel(title)
+        t.setObjectName("PageTitle")
+        b.addWidget(t)
+        if sub:
+            s = QLabel(sub)
+            s.setObjectName("PageSub")
+            s.setWordWrap(True)
+            b.addWidget(s)
+        layout.addWidget(bar)
+        return bar
 
     # ---------- 基础数据 ----------
+    def _recent_files(self):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
+        """最近打开的文件路径列表（仅保留仍存在的文件，最多8个）。"""
+        from PySide6.QtCore import QSettings
+        q = QSettings("com-in", "SCS-Saves-Editor")
+        raw = q.value("welcome/recent", [])
+        try:
+            items = list(raw) if raw is not None else []
+        except TypeError:
+            items = []
+        recent = []
+        for p in items:
+            p = str(p)
+            if os.path.isfile(p) and p not in recent:
+                recent.append(p)
+            if len(recent) >= 8:
+                break
+        return recent
+
+    def _record_recent_file(self, path):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
+        """把新打开的路径记录进最近文件列表（去重置顶、截断8个）。"""
+        from PySide6.QtCore import QSettings
+        if not path:
+            return
+        q = QSettings("com-in", "SCS-Saves-Editor")
+        old = q.value("welcome/recent", [])
+        try:
+            items = list(old) if old is not None else []
+        except TypeError:
+            items = []
+        recent = []
+        for p in items:
+            p = str(p)
+            if p != path and p not in recent:
+                recent.append(p)
+            if len(recent) >= 7:
+                break
+        recent.insert(0, path)
+        q.setValue("welcome/recent", recent)
+        if hasattr(self, "recent_list") and self.recent_list is not None:
+            self._welcome_refresh_recent()
+
+    def _welcome_refresh_recent(self):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
+        """刷新欢迎页最近文件列表。"""
+        if not hasattr(self, "recent_list") or self.recent_list is None:
+            return
+        lst = self.recent_list
+        lst.clear()
+        for p in self._recent_files():
+            name = os.path.basename(p)
+            folder = os.path.dirname(p)
+            it = QListWidgetItem(f"{name}   ——   {folder}")
+            it.setToolTip(p)
+            it.setData(Qt.UserRole, p)
+            lst.addItem(it)
+        if lst.count() == 0:
+            it = QListWidgetItem("（暂无最近打开的文件）")
+            it.setFlags(Qt.NoItemFlags)
+            lst.addItem(it)
+
+    def build_welcome_tab(self):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
+        """首页：VSCode 风格欢迎页，集中文件操作 + 最近打开。"""
+        lay = QVBoxLayout(self.tab_welcome)
+        lay.setContentsMargins(28, 26, 28, 20)
+        lay.setSpacing(10)
+
+        # 标题区
+        title = QLabel("💾 诈骗园区模拟器 - 存档修改器")
+        title.setObjectName("WelcomeTitle")
+        lay.addWidget(title)
+        sub = QLabel("打开存档开始编辑。左侧搜索直达功能，所有修改在保存后写入文件。")
+        sub.setObjectName("PageSub")
+        lay.addWidget(sub)
+        lay.addSpacing(8)
+
+        # 文件操作卡片（2x3 网格）
+        ops = [
+            ("📂 打开存档", "选择本地 ES3/JSON 存档文件并加载", self.open_file),
+            ("🔍 查找存档", "自动扫描游戏目录与程序目录的存档", self.find_save_file),
+            ("💾 保存存档", "保存当前改动并自动生成备份", self.save_file),
+            ("📋 备份目录", "打开存档自动备份所在目录", self.open_backup_dir),
+            ("♻️ 恢复备份", "从备份目录选择备份恢复", self.restore_backup),
+            ("🆕 新建骨架", "生成空白存档模板，从零搭建新档", self.new_save_skeleton),
+            ("📑 复制副本", "为当前存档生成带时间戳的副本", self.copy_save_file),
+            ("📤 导出 JSON", "把当前改动导出为可读 JSON 文件", self.export_json),
+            ("📥 导入 JSON", "从 ES3/JSON 文件导入为当前编辑对象", self.import_json),
+        ]
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        for i, (txt, tip, cb) in enumerate(ops):
+            b = QPushButton(f"{txt}\n{tip}")
+            b.setObjectName("WelcomeCard")
+            b.setToolTip(tip)
+            b.clicked.connect(cb)
+            grid.addWidget(b, i // 3, i % 3)
+        lay.addLayout(grid)
+        lay.addSpacing(10)
+
+        # 最近打开
+        rlabel = QLabel("🗂 最近打开")
+        rlabel.setObjectName("SectionTitle")
+        lay.addWidget(rlabel)
+        self.recent_list = QListWidget()
+        self.recent_list.setObjectName("ListTable")
+        self.recent_list.setMaximumHeight(180)
+        self.recent_list.itemDoubleClicked.connect(
+            lambda it: self._load_file(it.data(Qt.UserRole)))
+        lay.addWidget(self.recent_list, 1)
+        self._welcome_refresh_recent()
+
+        hint = QLabel("💡 双击最近列表项可直接打开；提示：修改后可能需要执行一次对应值的操作（如消费）才可以生效。")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
     def build_basic_tab(self):
         """真实因键: Currency/Level/Exp/Day/Electricity/ShopName/CallData/Difficulty"""
         # (ui_key, 标题, es3顶层key, 默认)
@@ -715,12 +870,12 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
             ("electricity", "⚡ 电力", "Electricity", "50"),
             ("shopName", "🏪 店铺名称", "ShopName", ""),
             ("callData", "📞 呼叫数据", "CallData", "-1"),
-            ("difficulty", "🌡️ 难度 (0/1/2)", "Difficulty", "1"),
+            ("difficulty", "🌡️ 游戏难度", "Difficulty", "1"),
         ]
         root = QWidget()
         lay = QGridLayout(root)
-        lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(12)
+        lay.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
+        lay.setSpacing(SECTION_SPACING)
 
         for i, (key, title, es3, default) in enumerate(fields):
             row, col = divmod(i, 2)
@@ -729,14 +884,14 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
             lay.addWidget(card, row, col)
 
         # 💰 货币：修改时实时钳制上限，不允许超过 1e+35（与游戏上限一致）
-        self.entry_basic["currency"].textChanged.connect(self._clamp_currency)
+        self.entry_basic["currency"].setToolTip("按游戏 float 类型保存，支持科学计数法；非法输入会在保存前提示")
 
         lay.setColumnStretch(0, 1)
         lay.setColumnStretch(1, 1)
         for r in range(4):
             lay.setRowStretch(r, 1)
 
-        hint = QLabel("提示：修改后点击顶部【保存存档】写入文件。Difficulty为游戏难度枚举(0/1/2)。")
+        hint = QLabel("修改后点击【保存存档】写入文件。难度：0 简单 / 1 普通 / 2 困难 / 3 沙盒。")
         hint.setObjectName("Hint")
         lay.addWidget(hint, 4, 0, 1, 2)
 
@@ -745,6 +900,7 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
     def _make_value_line(self, key, default):
         """生成 当前值 + 输入框 一行"""
         box = QWidget()
+        box.setObjectName("ValueRow")
         h = QHBoxLayout(box)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(10)
@@ -756,6 +912,27 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         h.addWidget(lab)
         h.addWidget(entry, 1)
         self.entry_basic[key] = entry
+        if key == "difficulty":
+            entry.hide()
+            combo = QComboBox()
+            for value, title in enumerate(("简单", "普通", "困难", "沙盒")):
+                combo.addItem(f"{title}  ·  {value}", value)
+            def sync_difficulty(text):
+                try:
+                    value = int(text)
+                except ValueError:
+                    return
+                with QSignalBlocker(combo):
+                    index = combo.findData(value)
+                    if index < 0:
+                        combo.addItem(f"未知难度  ·  {value}", value)
+                        index = combo.count() - 1
+                    combo.setCurrentIndex(index)
+            entry.textChanged.connect(sync_difficulty)
+            combo.currentIndexChanged.connect(lambda _: entry.setText(str(combo.currentData())))
+            sync_difficulty(default)
+            self.difficulty_combo = combo
+            h.addWidget(combo, 1)
         return box
 
     def _clamp_currency(self, text):
@@ -775,13 +952,16 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
     def tab_basic_layout_add(self, root):
         outer = QVBoxLayout(self.tab_basic)
         outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(SECTION_SPACING)
+        self._page_header(outer, "📊 基础数据", "货币、等级、经验、天数、电力、店铺名称等核心数值")
         outer.addWidget(root)
 
     # ---------- 加密货币 ----------
     def build_crypto_tab(self):
         lay = QVBoxLayout(self.tab_crypto)
-        lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(8)
+        lay.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
+        lay.setSpacing(SECTION_SPACING)
+        self._page_header(lay, "💎 加密货币", "查看并修改各币种的当前价格与持有量")
 
         self.crypto_table = QTableWidget(0, 4)
         self.crypto_table.setHorizontalHeaderLabels(
@@ -804,8 +984,9 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
     # ---------- 升级 ----------
     def build_upgrade_tab(self):
         lay = QVBoxLayout(self.tab_upgrade)
-        lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(8)
+        lay.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
+        lay.setSpacing(SECTION_SPACING)
+        self._page_header(lay, "⬆️ 升级", "一键升级并逐个调整各升级项等级")
 
         # 一键操作按钮
         bar = QHBoxLayout()
@@ -834,8 +1015,9 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
     # ---------- 内存修改（外部进程内存扫描，不写入存档文件） ----------
     def build_memory_tab(self):
         lay = QVBoxLayout(self.tab_memory)
-        lay.setContentsMargins(14, 14, 14, 10)
-        lay.setSpacing(8)
+        lay.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, 10)
+        lay.setSpacing(SECTION_SPACING)
+        self._page_header(lay, "🔬 内存 BYCT", "直接扫描游戏进程内存并修改数值（不写入存档文件）")
 
         self._mem_scanner = None    # MemScanner（附加到游戏进程）
         self._mem_targets = []      # [(name, value, vtype)] 从存档提取的扫描目标
@@ -891,20 +1073,11 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         self.mem_target_table.setMaximumHeight(190)
         lay.addWidget(self.mem_target_table)
 
-        # 5) 扫描操作
+        # 5) 扫描操作（拆两行：扫描执行 | 结果处理，避免按钮挤压）
         act = QHBoxLayout(); act.setSpacing(8)
         b_scan = QPushButton("🚀 开始扫描")
         b_scan.clicked.connect(self._mem_start_scan)
         act.addWidget(b_scan)
-        b_ref = QPushButton("🔁 重读选中地址"); b_ref.setObjectName("Ghost")
-        b_ref.clicked.connect(self._mem_reread)
-        act.addWidget(b_ref)
-        b_write = QPushButton("✍ 写入全部选中地址"); b_write.setObjectName("Ghost")
-        b_write.clicked.connect(self._mem_write_selected)
-        act.addWidget(b_write)
-        b_clear = QPushButton("🗑 清空结果"); b_clear.setObjectName("Ghost")
-        b_clear.clicked.connect(self._mem_clear)
-        act.addWidget(b_clear)
         b_scan2 = QPushButton("🔎 下一次扫描(只保留已变化)")
         b_scan2.clicked.connect(self._mem_scan_again)
         act.addWidget(b_scan2)
@@ -912,20 +1085,32 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         self._mem_fold_btn.setCheckable(True)
         self._mem_fold_btn.clicked.connect(self._mem_toggle_fold)
         act.addWidget(self._mem_fold_btn)
+        act.addStretch(1)
+        lay.addLayout(act)
+        act2 = QHBoxLayout(); act2.setSpacing(8)
+        b_ref = QPushButton("🔁 重读选中地址"); b_ref.setObjectName("Ghost")
+        b_ref.clicked.connect(self._mem_reread)
+        act2.addWidget(b_ref)
+        b_write = QPushButton("✍ 写入全部选中地址"); b_write.setObjectName("Ghost")
+        b_write.clicked.connect(self._mem_write_selected)
+        act2.addWidget(b_write)
+        b_clear = QPushButton("🗑 清空结果"); b_clear.setObjectName("Ghost")
+        b_clear.clicked.connect(self._mem_clear)
+        act2.addWidget(b_clear)
         b_sync = QPushButton("🔁 自动同步10s：开")
         b_sync.setObjectName("Ghost")
         b_sync.setCheckable(True)
         b_sync.setChecked(True)
         b_sync.clicked.connect(self._mem_toggle_sync)
-        act.addWidget(b_sync)
+        act2.addWidget(b_sync)
         self._mem_sync_btn = b_sync
         b_sync.hide()                                        # 仅隐藏按钮，不影响同步功能
         self._mem_sync_timer = QTimer(self)
         self._mem_sync_timer.setInterval(10000)                # 每 10s 同步一次
         self._mem_sync_timer.timeout.connect(self._mem_sync_once)
         self._mem_sync_timer.start()
-        act.addStretch(1)
-        lay.addLayout(act)
+        act2.addStretch(1)
+        lay.addLayout(act2)
 
         # 6) 结果树（按字段分组，子列表显示详细地址，默认不展开避免卡死）
         self.mem_result_table = QTreeWidget()
@@ -992,9 +1177,8 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
                 amt = c.get("coinAmount")
                 if not ok_num(amt):
                     continue
-                nm = c.get("coin", c.get("name", f"Crypto[{i}]"))
-                t.append((f"加密货币.{nm}", float(amt) if isinstance(amt, float) else int(amt),
-                          "float32" if isinstance(amt, float) else "int32"))
+                nm = c.get("cryptoName", f"Crypto[{i}]")
+                t.append((f"加密货币.{nm}", float(amt), "float32"))
 
         uarr = self.es3_get("Upgrade")
         if isinstance(uarr, list):
@@ -1343,8 +1527,9 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
     def build_debt_story_tutorial_tabs(self):
         """合并页：银行还款 / 剧情与任务解锁 / 教程解锁 占用小，合并为单页。"""
         lay = QVBoxLayout(self.tab_story)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
+        lay.setSpacing(SECTION_SPACING)
+        self._page_header(lay, "🔓 解锁管理", "银行还款、剧情与任务解锁、教程解锁 合并为一页")
 
         def section(title_txt):
             t = QLabel(title_txt)
@@ -1360,7 +1545,7 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         bar.addWidget(b1); bar.addWidget(b2); bar.addWidget(b3); bar.addStretch(1)
         lay.addLayout(bar)
         self.debt_table = self._build_list_editor(lay)
-        self.debt_table.setMaximumHeight(240)
+        self.debt_table.setMaximumHeight(TABLE_FIXED_HEIGHT)
         self._debt_headers = {
             "paidAmount": "已还金额", "curAmount": "当前金额", "dayLeft": "总天数",
             "curDayLeft": "剩余天数", "isPaid": "是否已还", "unlocked": "是否解锁",
@@ -1378,7 +1563,7 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         bar.addWidget(b1); bar.addWidget(b2); bar.addStretch(1)
         lay.addLayout(bar)
         self.story_table = self._build_list_editor(lay)
-        self.story_table.setMaximumHeight(240)
+        self.story_table.setMaximumHeight(TABLE_FIXED_HEIGHT)
         self._story_headers = {
             "id": "剧情索引", "currentProgress": "当前进度", "unlockProgress": "解锁所需",
             "isCompleted": "是否完成", "unlocked": "是否解锁", }
@@ -1396,7 +1581,7 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         bar.addWidget(b1); bar.addWidget(b2); bar.addStretch(1)
         lay.addLayout(bar)
         self.tutorial_table = self._build_list_editor(lay)
-        self.tutorial_table.setMaximumHeight(240)
+        self.tutorial_table.setMaximumHeight(TABLE_FIXED_HEIGHT)
         self._tutorial_headers = {"index": "教程索引", "unlocked": "是否解锁", }
         self.tutorial_table._header_map = self._tutorial_headers
         self.tutorial_table._readonly_cols = ("index",)
@@ -1506,8 +1691,9 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
     def build_json_tab(self):
         # 物品：列表表格编辑
         lay = QVBoxLayout(self.tab_items)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
+        lay.setSpacing(SECTION_SPACING)
+        self._page_header(lay, "📦 物品", "物品列表：每个物品一行，位置/旋转/数量等可直改")
         self.items_table = self._build_list_editor(lay)
         self.items_table._id_field = "itemId"
         self.items_table._name_col_title = "物品名称"
@@ -1529,8 +1715,9 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
 
         # 放置物品：列表表格编辑
         lay = QVBoxLayout(self.tab_placed)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
+        lay.setSpacing(SECTION_SPACING)
+        self._page_header(lay, "🏗️ 放置物品", "已放置物品列表：逐一编辑位置/分配等字段")
         self.placed_table = self._build_list_editor(lay)
         self.placed_table._id_field = "itemDataId"
         self.placed_table._name_col_title = "物品名称"
@@ -1549,6 +1736,14 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         self.placed_table.itemSelectionChanged.connect(self._on_placed_selection)
         lay.addWidget(self.placed_table, 1)
         lay.addWidget(self._build_row_ops_bar(self.placed_table))
+        # 复制按钮（原在顶部栏，迁入本页；选中一行后显示）
+        self.placed_copy_btn = QPushButton("📋 复制选中行")
+        self.placed_copy_btn.setObjectName("Ghost")
+        self.placed_copy_btn.clicked.connect(self._placed_copy_row)
+        _pcb = QWidget(); _pcl = QHBoxLayout(_pcb)
+        _pcl.setContentsMargins(0, 0, 0, 0); _pcl.setSpacing(8)
+        _pcl.addWidget(self.placed_copy_btn); _pcl.addStretch(1)
+        lay.addWidget(_pcb)
         self._table_keys["PlaceItems"] = self.placed_table
         h = QLabel("✅ 放置物品列表：每个元素一行，position/rotation 拆为独立列；assignedNpcId/tamingNpcs 等列表或空值以 JSON 文本编辑。")
         h.setObjectName("Hint")
@@ -1556,8 +1751,9 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
 
         # 其他：可编辑的通用数据查看器（标量→输入框，列表→表格，复杂结构→JSON）
         lay = QVBoxLayout(self.tab_other)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
+        lay.setSpacing(SECTION_SPACING)
+        self._page_header(lay, "⚙️ 其他数据", "通用数据查看器：标量 / 表格 / JSON 三种模式")
 
         # 键选择栏
         sel_bar = QHBoxLayout()
@@ -1705,6 +1901,49 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
                         for i in items))
 
     def _list_load(self, table, items):
+        with QSignalBlocker(table):
+            table.setRowCount(0)
+            table._source_not_list = not isinstance(items, list)
+            table._source_value = copy.deepcopy(items)
+            self._list_load_impl(table, items if isinstance(items, list) else [])
+            for r, value in enumerate(items if isinstance(items, list) else []):
+                header = QTableWidgetItem(str(r + 1))
+                header.setData(Qt.UserRole, copy.deepcopy(value))
+                table.setVerticalHeaderItem(r, header)
+                for c in range(table.columnCount()):
+                    cell = table.item(r, c)
+                    if cell:
+                        cell.setData(Qt.UserRole + 10, {"ui": [cell.text(), cell.checkState().value],
+                            "value": copy.deepcopy(value)})
+            hidden = getattr(table, "_hide_cols", ())
+            for c, spec in enumerate(getattr(table, "_list_meta", {}).get("cols", [])):
+                table.setColumnHidden(c, spec["path"][0] in hidden)
+
+    def _other_repr(self):
+        if self._other_scalar_entry is not None:
+            return self._other_scalar_entry.text()
+        if self._other_stack.currentIndex() == 1:
+            return [[(cell.text(), cell.checkState().value) if cell else None
+                     for cell in (self.other_table.item(r, c) for c in range(self.other_table.columnCount()))]
+                    for r in range(self.other_table.rowCount())]
+        return self.other_json.toPlainText()
+
+    def _other_has_edits(self):
+        return bool(self._other_cur_key and self._other_repr() != getattr(self, "_other_initial", None))
+
+    def _save_other_key(self):
+        if not self._other_has_edits():
+            return
+        key = self._other_cur_key
+        if self._other_scalar_entry is not None:
+            value = self._text_to_cell(self._other_scalar_entry.text(), self._type_of(self.es3_get(key)))
+        elif self._other_stack.currentIndex() == 1:
+            value = self._list_save(self.other_table)
+        else:
+            value = json.loads(self.other_json.toPlainText())
+        self.es3_set(key, value)
+
+    def _list_load_impl(self, table, items):
         """把列表填入表格（支持 list[dict] 与纯标量列表），并记录类型元数据。"""
         # 纯标量列表：单列编辑
         if self._is_scalar_list(items):
@@ -1788,6 +2027,12 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
                                 cell.setData(Qt.UserRole, v)
                 table.setItem(r, c, cell)
         table.resizeColumnsToContents()
+        # 隐藏指定列（数据保留，仅不显示）
+        hide_cols = getattr(table, "_hide_cols", ()) or ()
+        if hide_cols:
+            for c, spec in enumerate(colspec):
+                if spec["path"][0] in hide_cols:
+                    table.setColumnHidden(c, True)
         table.blockSignals(False)
 
     def _scalar_header(self, t):
@@ -1805,45 +2050,44 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         return json.dumps(v, ensure_ascii=False)  # dict/list
 
     def _list_save(self, table):
-        """把表格读回为 list（list[dict] 或纯标量列表），按列类型还原。"""
+        if getattr(table, "_source_not_list", False):
+            return copy.deepcopy(table._source_value)
         meta = getattr(table, "_list_meta", {})
-        # 纯标量列表
-        if "scalar" in meta:
-            t = meta.get("scalar")
-            out = []
-            for r in range(table.rowCount()):
-                it = table.item(r, 0)
-                if t == "bool" and it is not None:
-                    out.append(it.checkState() == Qt.Checked)
-                else:
-                    text = it.text() if it is not None else ""
-                    out.append(self._text_to_cell(text, t))
-            return out
-
-        colspec = meta.get("cols", [])
-        n = table.rowCount()
         out = []
-        for r in range(n):
-            d = {}
-            for c, spec in enumerate(colspec):
+        for r in range(table.rowCount()):
+            header = table.verticalHeaderItem(r)
+            seed = header.data(Qt.UserRole) if header else None
+            if "scalar" in meta:
+                cell = table.item(r, 0)
+                snapshot = cell.data(Qt.UserRole + 10) if cell else None
+                if snapshot and [cell.text(), cell.checkState().value] == snapshot["ui"]:
+                    out.append(copy.deepcopy(snapshot["value"]))
+                else:
+                    out.append(cell.checkState() == Qt.Checked if meta["scalar"] == "bool"
+                               else self._text_to_cell(cell.text() if cell else "", meta["scalar"]))
+                continue
+            if header and not isinstance(seed, dict):
+                out.append(copy.deepcopy(seed))
+                continue
+            row = copy.deepcopy(seed) if isinstance(seed, dict) else {}
+            for c, spec in enumerate(meta.get("cols", [])):
                 if spec.get("is_name"):
                     continue
-                it = table.item(r, c)
-                if (spec.get("optional") and it is not None and spec["type"] == "bool"
-                        and not (it.flags() & Qt.ItemIsUserCheckable)):
+                cell = table.item(r, c)
+                snapshot = cell.data(Qt.UserRole + 10) if cell else None
+                if snapshot and [cell.text(), cell.checkState().value] == snapshot["ui"]:
                     continue
-                if spec["type"] == "bool" and it is not None:
-                    val = (it.checkState() == Qt.Checked)
-                else:
-                    raw = it.data(Qt.UserRole) if it is not None else None
-                    if raw is not None:
-                        val = raw
-                    else:
-                        text = it.text() if it is not None else ""
-                        val = self._text_to_cell(text, spec["type"])
-                self._set_path(d, spec["path"], val)
-            out.append(d)
+                if spec.get("optional") and cell and not cell.flags() & Qt.ItemIsUserCheckable:
+                    continue
+                try:
+                    value = (cell.checkState() == Qt.Checked if spec["type"] == "bool" and cell
+                             else self._text_to_cell(cell.text() if cell else "", spec["type"]))
+                except (ValueError, TypeError) as exc:
+                    raise ValueError(f"第 {r + 1} 行 / {spec['name']}：{exc}") from exc
+                self._set_path(row, spec["path"], value)
+            out.append(row)
         return out
+
 
     def _pick_path(self, it, path):
         """按 path 逐层取值；中间缺层返回 None。"""
@@ -1871,41 +2115,24 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
                 cur = nxt
 
     def _text_to_cell(self, text, t):
-        txt = text
         if t == "int":
-            return self._to_int(txt)
+            return self._to_int(text)
         if t == "float":
-            return self._to_float(txt)
+            return self._to_float(text)
         if t == "bool":
-            return self._parse_bool_text(txt)
+            return self._parse_bool_text(text)
         if t == "str":
-            return txt
-        # None：复杂结构，尽量还原 dict/list
-        s = txt.strip()
-        if not s:
-            return None
-        try:
-            return json.loads(s)
-        except Exception:
-            return s
+            return text
+        return json.loads(text) if text.strip() else None
+
 
     def _to_int(self, txt):
-        s = str(txt).strip()
-        if not s:
-            return 0
-        try:
-            return int(float(s))
-        except Exception:
-            return 0
+        return number(txt, integer=True)
+
 
     def _to_float(self, txt):
-        s = str(txt).strip()
-        if not s:
-            return 0.0
-        try:
-            return float(s)
-        except Exception:
-            return 0.0
+        return number(txt)
+
 
     def _parse_bool_text(self, txt):
         """宽松布尔解析：true/false/yes/no/on/off/1/0/是/否/有/无/✓/✗ 等"""
@@ -1925,21 +2152,26 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         return s in ("true", "1")
 
     def _list_add_row(self, table):
-        table.insertRow(table.rowCount())
         meta = getattr(table, "_list_meta", {})
-        # 纯标量 bool 列表：新增行放一个未勾选复选框
-        if "scalar" in meta and meta.get("scalar") == "bool":
-            table.setItem(table.rowCount() - 1, 0, self._new_bool_cell(False))
+        if not meta.get("cols") and "scalar" not in meta:
+            self.set_status("当前列表没有字段模板，请使用游戏生成的数据")
             return
-        colspec = meta.get("cols", [])
-        r = table.rowCount() - 1
-        for c, spec in enumerate(colspec):
-            if table.item(r, c) is not None:
-                continue
-            if spec["type"] == "bool":
-                table.setItem(r, c, self._new_bool_cell(False))
+        r = table.rowCount()
+        table.insertRow(r)
+        if "scalar" in meta:
+            table.setItem(r, 0, self._new_bool_cell(False) if meta["scalar"] == "bool"
+                          else QTableWidgetItem("0" if meta["scalar"] in ("int", "float") else ""))
+            return
+        for c, spec in enumerate(meta["cols"]):
+            if spec.get("is_name"):
+                cell = QTableWidgetItem("")
+                cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
+            elif spec["type"] == "bool":
+                cell = self._new_bool_cell(False)
             else:
-                table.setItem(r, c, QTableWidgetItem(""))
+                cell = QTableWidgetItem("0" if spec["type"] in ("int", "float") else "")
+            table.setItem(r, c, cell)
+
 
     def _list_del_row(self, table):
         rows = set(i.row() for i in table.selectedIndexes())
@@ -1977,7 +2209,7 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
             "isFood": False,
             "isDead": False,
         }
-        items = self.es3_get("Items")
+        items = self._list_save(self.items_table)
         if not isinstance(items, list):
             items = []
         items.append(new)
@@ -1985,12 +2217,19 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         self._list_load(self.items_table, items)
         # 复制完成后自动跳转到"物品"菜单页
         row = self._nav_keys.index("items")
-        if row != self.nav_list.currentRow():
-            self.nav_list.setCurrentRow(row)
+        self._go_to_page("items")
 
     # ---------- "其他"页通用编辑器 ----------
     def _on_other_key_changed(self):
+        try:
+            self._save_other_key()
+        except (ValueError, TypeError) as exc:
+            with QSignalBlocker(self.other_key_box):
+                self.other_key_box.setCurrentIndex(self.other_key_box.findData(self._other_cur_key))
+            QMessageBox.warning(self, "请修正输入", str(exc))
+            return
         self._render_other_key()
+
 
     def _render_other_key(self):
         """根据下拉选中的键，渲染 标量/表格/JSON 编辑器。"""
@@ -2018,7 +2257,7 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
             entry.setAlignment(Qt.AlignLeft)
             row.addWidget(entry, 1)
             self._other_scalar_entry = entry
-        elif isinstance(val, list):
+        elif isinstance(val, list) and all(isinstance(x, dict) for x in val):
             self._other_stack.setCurrentIndex(1)  # 表格
             self.other_row_bar.setVisible(True)
             self._list_load(self.other_table, val)
@@ -2028,6 +2267,7 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
             self.other_row_bar.setVisible(False)
             self.other_json.setPlainText(
                 json.dumps(val, ensure_ascii=False, indent="\t") if val is not None else "")
+        self._other_initial = self._other_repr()
 
     def _is_scalar(self, val):
         return isinstance(val, (bool, int, float, str))
@@ -2041,8 +2281,8 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
     def build_workers_tab(self):
         root = QWidget()
         v = QVBoxLayout(root)
-        v.setContentsMargins(16, 16, 16, 16)
-        v.setSpacing(10)
+        v.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
+        v.setSpacing(SECTION_SPACING)
 
         # 顶部工具行
         top = QHBoxLayout()
@@ -2082,6 +2322,7 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
 
         # 属性网格
         grid = QGridLayout()
+        grid.setSpacing(10)
         self.worker_entries = {}
         attrs = [
             ("money", "💵 金钱"),
@@ -2095,17 +2336,18 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
             ("tameProgress", "🦴 驯服进度"),
         ]
         for i, (key, label) in enumerate(attrs):
-            row, col = divmod(i, 2)
+            row, col = divmod(i, 3)
+            grid.setColumnStretch(col, 1)
             f = QFrame()
             f.setObjectName("FieldBox")
             fv = QVBoxLayout(f)
-            fv.setContentsMargins(10, 6, 10, 6)
-            fv.setSpacing(4)
+            fv.setContentsMargins(12, 8, 12, 8)
+            fv.setSpacing(6)
             lb = QLabel(label)
             lb.setObjectName("Muted")
             e = QLineEdit()
             e.setFixedHeight(32)
-            e.textChanged.connect(lambda *a, k=key: self.on_worker_field_changed(k))
+            e.editingFinished.connect(lambda k=key: self.on_worker_field_changed(k))
             fv.addWidget(lb)
             fv.addWidget(e)
             grid.addWidget(f, row, col)
@@ -2154,6 +2396,8 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
 
         outer = QVBoxLayout(self.tab_workers)
         outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(SECTION_SPACING)
+        self._page_header(outer, "👷 工人", "逐个编辑工人的属性、职业、驯服与死亡状态")
         outer.addWidget(root)
 
     # ==================== 日志 ====================
@@ -2310,110 +2554,91 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
             return listw.currentItem().data(Qt.UserRole)
         return None
 
-    def _load_file(self, path):
-        # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
-        """加载指定存档：解析 JSON、自动备份、刷新界面。"""
-        try:
-            self.file_path = path
-            self.log(f"正在打开: {path}")
 
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
-            self.data = json.loads(content)
-            self.log("✅ JSON 解析成功")
 
-            # 自动备份
-            backup_dir = os.path.join(os.path.dirname(path), "ES3_Backups")
-            os.makedirs(backup_dir, exist_ok=True)
-            backup_name = (f"{os.path.basename(path)}.backup_"
-                           f"{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-            backup_path = os.path.join(backup_dir, backup_name)
-            shutil.copy2(path, backup_path)
-            self.log(f"📋 已自动备份到: {backup_path}")
 
-            self.parse_data_to_ui()
-            base = os.path.basename(path)
-            self.setWindowTitle(f"诈骗园区模拟器 - 存档修改器  —  {base}")
-            self.status_lbl.setText(f"已加载: {base}")
-            if getattr(self, "mem_save_lbl", None) is not None:
-                self._mem_sync_save_label()
-            QMessageBox.information(self, "打开成功",
-                                    f"存档已加载！\n自动备份已保存到:\n{backup_path}")
 
-        except json.JSONDecodeError as e:
-            QMessageBox.critical(self, "JSON解析错误",
-                                 f"文件不是标准JSON格式！\n错误: {e}\n\n请确认这是ES3导出的JSON存档。")
-            self.log(f"❌ JSON解析失败: {e}")
-        except Exception as e:
-            QMessageBox.critical(self, "打开失败", f"错误: {e}")
-            self.log(f"❌ 打开失败: {e}")
 
-    def save_file(self):
-        if 1 != 1:
-            print("作者：com-in Github：github.com/com-in/SCS-Saves-Editor")
+
+
+
+    def import_json(self):
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
-        if not self.file_path or self.data is None:
+        """导入 JSON：选择 json/es3 文件加载为当前编辑对象。"""
+        start_dir = self._guess_default_dir()
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入存档", start_dir,
+            "ES3 存档 (*.es3);;JSON 文件 (*.json);;所有文件 (*.*)")
+        if not path:
+            return
+        self._load_file(path)
+
+    def copy_save_file(self):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
+        """复制副本：把当前存档文件复制出一份带时间戳的副本，快速备份当前状态。"""
+        if not self.file_path or not os.path.isfile(self.file_path):
             QMessageBox.warning(self, "未打开文件", "请先打开一个存档文件！")
             return
-
+        base, ext = os.path.splitext(os.path.basename(self.file_path))
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        dst = os.path.join(os.path.dirname(self.file_path),
+                           f"{base}_copy_{stamp}{ext}")
         try:
-            # 1. 集数据
-            self.save_ui_to_data()
-
-            # 2. 合并 JSON tab
-            self.merge_json_tabs()
-
-            # 3. 再备份
-            backup_dir = os.path.join(os.path.dirname(self.file_path), "ES3_Backups")
-            os.makedirs(backup_dir, exist_ok=True)
-            backup_name = (f"{os.path.basename(self.file_path)}.backup_save_"
-                           f"{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-            backup_path = os.path.join(backup_dir, backup_name)
-            shutil.copy2(self.file_path, backup_path)
-
-            # 4. 写临时文件
-            temp_path = self.file_path + ".tmp"
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, ensure_ascii=False, indent="\t")
-
-            # 5. 原子替换
-            os.replace(temp_path, self.file_path)
-
-            self.log(f"✅ 保存成功！备份: {backup_name}")
-            QMessageBox.information(self, "保存成功",
-                                    f"存档已保存！\n同时创建了备份:\n{backup_path}")
-
-        except json.JSONDecodeError as e:
-            QMessageBox.critical(self, "JSON格式错误",
-                                 f"物品/放置物品等标签页的JSON格式有误！\n"
-                                 f"请检查各文本框中的JSON语法。\n错误: {e}")
-            self.log(f"❌ JSON格式错误: {e}")
+            shutil.copy2(self.file_path, dst)
+            self.log(f"📑 已复制副本: {dst}")
+            QMessageBox.information(self, "复制成功",
+                                    f"已生成副本:\n{dst}\n\n当前编辑对象不变。")
         except Exception as e:
-            QMessageBox.critical(self, "保存失败", f"错误: {e}")
-            self.log(f"❌ 保存失败: {e}")
-            if os.path.exists(self.file_path + ".tmp"):
-                try:
-                    os.remove(self.file_path + ".tmp")
-                except Exception:
-                    pass
+            QMessageBox.critical(self, "复制失败", f"错误: {e}")
+            self.log(f"❌ 复制失败: {e}")
+
+    def new_save_skeleton(self):
+        # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
+        """新建存档骨架：生成一个带默认字段结构的空白存档模板并加载到界面。"""
+        skeleton = {
+            "Currency": {"value": 0}, "Level": {"value": 1}, "Exp": {"value": 0},
+            "Day": {"value": 1}, "Electricity": {"value": 0}, "ShopName": {"value": ""},
+            "CallData": {"value": -1}, "Difficulty": {"value": 1},
+            "Workers": {"value": []}, "CryptoData": {"value": []},
+            "Items": {"value": []}, "PlaceItems": {"value": []}, "Upgrade": {"value": []},
+            "Progress": {"value": []}, "EasterEgg": {"value": []},
+            "NpcPurchase": {"value": {}}, "Mayor": {"value": []},
+            "NpcRoleFound": {"value": []}, "Interior": {"value": []}, "Dirt": {"value": []},
+            "MissionProgress": {"value": []}, "Debt": {"value": []},
+            "TutorialSaveData": {"value": {}},
+            "BodyGuard": {"value": {"guards": []}}, "Tutorial": {"value": []},
+            "ScheduleCall": {"value": []}, "GameStats": {"value": []},
+            "Cat": {"value": {}}, "DeliveryLocation": {"value": 0},
+            "AirportNpc": {"value": []},
+        }
+        start_dir = self._guess_default_dir()
+        path, _ = QFileDialog.getSaveFileName(
+            self, "新建存档骨架", os.path.join(start_dir or "", "new_save.es3"),
+            "ES3 存档 (*.es3);;JSON 文件 (*.json);;所有文件 (*.*)")
+        if not path:
+            return
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(skeleton, f, ensure_ascii=False, indent="\t")
+        self.file_path = path
+        self.data = skeleton
+        self.parse_data_to_ui()
+        base = os.path.basename(path)
+        self.setWindowTitle(f"诈骗园区模拟器 - 存档修改器  —  {base}")
+        self.status_lbl.setText(f"已新建骨架: {base}")
+        self.log(f"🆕 已新建存档骨架: {path}")
 
     def save_ui_to_data(self):
         # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
         if not isinstance(self.data, dict):
             return
-        # 基础数据
-        self.es3_set("Currency", safe_float(self.entry_basic["currency"].text()))
-        self.es3_set("Level", safe_int(self.entry_basic["level"].text()))
-        self.es3_set("Exp", safe_int(self.entry_basic["exp"].text()))
-        self.es3_set("Day", safe_int(self.entry_basic["days"].text()))
-        _elec = safe_int(self.entry_basic["electricity"].text())
-        if _elec > 3200:  # 电力存档上限 3200，超限自动纠正
-            _elec = 3200
-            self.entry_basic["electricity"].setText("3200")
-        self.es3_set("Electricity", _elec)
+        basic = {"currency": ("Currency", False), "level": ("Level", True),
+                 "exp": ("Exp", True), "days": ("Day", True),
+                 "electricity": ("Electricity", True), "callData": ("CallData", True),
+                 "difficulty": ("Difficulty", True)}
+        for field, (key, integer) in basic.items():
+            if self.es3_get(key) is not None:
+                self.es3_set(key, number(self.entry_basic[field].text(), integer=integer, label=key))
         self.es3_set("ShopName", self.entry_basic["shopName"].text())
-        self.es3_set("CallData", safe_int(self.entry_basic["callData"].text(), -1))
-        self.es3_set("Difficulty", safe_int(self.entry_basic["difficulty"].text(), 1))
 
         # 加密货币（表格列: 币种/价格/持有量/均价）
         circ = self.es3_get("CryptoData")
@@ -2426,9 +2651,17 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
                 it2 = self.crypto_table.item(i, 2)
                 it3 = self.crypto_table.item(i, 3)
                 c["cryptoName"] = it0.text() if it0 else (c.get("cryptoName", ""))
-                c["currentPrice"] = self._to_float(it1.text() if it1 else 0)
-                c["coinAmount"] = self._to_int(it2.text() if it2 else 0)
-                c["avgBuyPrice"] = self._to_int(it3.text() if it3 else 0)
+                price = self._to_float(it1.text() if it1 else 0)
+                if price != c.get("currentPrice"):
+                    # CryptoData.Initialise uses the last price history point.
+                    history = c.get("priceHistory")
+                    if isinstance(history, list) and history:
+                        history[-1] = price
+                    else:
+                        c["priceHistory"] = [price]
+                c["currentPrice"] = price
+                c["coinAmount"] = self._to_float(it2.text() if it2 else 0)
+                c["avgBuyPrice"] = self._to_float(it3.text() if it3 else 0)
 
         # 升级（表格列: 名称[只读]/等级）：
         # 只读名称列不写回；仅当该升级项（按内部英文名）在配置中时，才对等级做上限钳制并写回。
@@ -2452,9 +2685,9 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
                 if setup is None or eng not in table_level:
                     continue
                 it1 = table_level[eng]
-                lv = self._to_int(it1.text() if it1.text() else 0)
-                if lv > setup[1]:
-                    lv = setup[1]
+                if it1.text() == str(u.get("level", 0)):
+                    continue
+                lv = number(it1.text(), integer=True, label=eng, minimum=0, maximum=setup[1])
                 u["level"] = lv
                 # 让界面等级单元格同步为纠正后的值
                 if it1 and it1.text() != str(lv):
@@ -2467,40 +2700,14 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         self.save_extra_to_data()
 
     def merge_json_tabs(self):
-        """把物品/放置物品列表表格、"其他"页编辑器 合并写入 data。"""
-        # 物品 / 放置物品
         for key, table in self._table_keys.items():
-            try:
-                items = self._list_save(table)
-                self.es3_set(key, items)
-            except Exception as e:
-                self.log(f"⚠️ [{key}] 列表解析失败: {e}")
-
-        # "其他"页当前键
-        key = self._other_cur_key
-        if key and isinstance(self.data, dict) and key in self.data:
-            if self._other_scalar_entry is not None:
-                val = self.es3_get(key)
-                if isinstance(val, bool):
-                    v = self._other_scalar_entry.text()
-                    self.es3_set(key, v.lower() in ("true", "1", "yes", "on"))
-                elif isinstance(val, (int, float)):
-                    v = self._other_scalar_entry.text()
-                    self.es3_set(key, self._to_float(v) if isinstance(val, float)
-                                 else self._to_int(v))
-                else:
-                    self.es3_set(key, self._other_scalar_entry.text())
-            elif self._other_stack.currentIndex() == 1:
-                # 列表表格
+            if key in self.data:
                 try:
-                    self.es3_set(key, self._list_save(self.other_table))
-                except Exception as e:
-                    self.log(f"⚠️ [{key}] 解析失败: {e}")
-            elif self._other_stack.currentIndex() == 2:
-                # JSON
-                raw = self.other_json.toPlainText().strip()
-                if raw:
-                    self.es3_set(key, json.loads(raw))
+                    self.es3_set(key, self._list_save(table))
+                except (ValueError, TypeError) as exc:
+                    raise ValueError(f"{key}: {exc}") from exc
+        self._save_other_key()
+
 
     # ==================== 解析进界面 ====================
     def parse_data_to_ui(self):
@@ -2515,7 +2722,7 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         self.entry_basic["electricity"].setText(str(self.es3_get("Electricity") or 0))
         self.entry_basic["shopName"].setText(str(self.es3_get("ShopName") or ""))
         self.entry_basic["callData"].setText(str(self.es3_get("CallData") if self.es3_get("CallData") is not None else -1))
-        self.entry_basic["difficulty"].setText(str(self.es3_get("Difficulty") or 1))
+        self.entry_basic["difficulty"].setText(str(self.es3_get("Difficulty") if self.es3_get("Difficulty") is not None else 1))
 
         # 加密货币
         self.load_crypto_ui()
@@ -2535,8 +2742,13 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         # "其他"页：重建键选择下拉（按原存档 key 顺序）
         self.other_key_box.blockSignals(True)
         self.other_key_box.clear()
+        dedicated = set(self._table_keys) | {"Currency", "Level", "Exp", "Day", "Electricity",
+            "ShopName", "CallData", "Difficulty", "Workers", "CryptoData", "Upgrade",
+            "NpcPurchase", "Cat", "DeliveryLocation", "AirportNpc", "BodyGuard", "Interior",
+            "Tutorial", "ScheduleCall", "NpcRoleFound", "Dirt"}
+        self._other_cur_key = None
         for k, node in self.data.items():
-            if isinstance(node, dict) and "value" in node:
+            if k not in dedicated and isinstance(node, dict) and "value" in node:
                 self.other_key_box.addItem(k, k)
         self.other_key_box.blockSignals(False)
         if self.other_key_box.count():
@@ -2558,7 +2770,9 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
                 continue
             row = self.crypto_table.rowCount()
             self.crypto_table.insertRow(row)
-            self.crypto_table.setItem(row, 0, QTableWidgetItem(str(c.get("cryptoName", ""))))
+            name_cell = QTableWidgetItem(str(c.get("cryptoName", "")))
+            name_cell.setFlags(name_cell.flags() & ~Qt.ItemIsEditable)
+            self.crypto_table.setItem(row, 0, name_cell)
             self.crypto_table.setItem(row, 1, QTableWidgetItem(str(c.get("currentPrice", 0))))
             self.crypto_table.setItem(row, 2, QTableWidgetItem(str(c.get("coinAmount", 0))))
             self.crypto_table.setItem(row, 3, QTableWidgetItem(str(c.get("avgBuyPrice", 0))))
@@ -2640,27 +2854,38 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
         return name or f"工人 #{idx}"
 
     def refresh_worker_list(self):
+        selected = self.current_worker
         self.worker_list.blockSignals(True)
         self.worker_list.clear()
-        query = self.search_entry.text().strip().lower()
-        shown = 0
-        for i, w in enumerate(self.workers):
-            text = self.worker_display(w, i).lower()
-            if query == "" or query in text:
-                self.worker_list.addItem(self.worker_display(w, i))
-                shown += 1
+        query = self.search_entry.text().strip().casefold()
+        selected_row = -1
+        for i, worker in enumerate(self.workers):
+            text = self.worker_display(worker, i)
+            role_data = worker.get("npcDataRole") if isinstance(worker, dict) else None
+            role = role_data.get("npcRoleId") if isinstance(role_data, dict) else None
+            if not query or query in (text + " " + _ROLE_NAME.get(role, str(role))).casefold():
+                item = QListWidgetItem(text)
+                item.setData(Qt.UserRole, i)
+                self.worker_list.addItem(item)
+                if i == selected:
+                    selected_row = self.worker_list.count() - 1
+        self.worker_list.setCurrentRow(selected_row)
         self.worker_list.blockSignals(False)
-        self.count_lbl.setText(f"共 {len(self.workers)} 个工人")
+        self.current_worker = selected if selected_row >= 0 else None
+        self.worker_panel.setEnabled(self.current_worker is not None)
+        self.count_lbl.setText(f"显示 {self.worker_list.count()} / {len(self.workers)} 个工人")
+
 
     def filter_workers(self):
         self.refresh_worker_list()
 
     def on_worker_select(self, row):
-        if row < 0 or row >= len(self.workers):
-            self.current_worker = None
-            return
-        self.current_worker = row
-        self.load_worker_to_ui(self.workers[row])
+        item = self.worker_list.item(row) if row >= 0 else None
+        self.current_worker = item.data(Qt.UserRole) if item else None
+        self.worker_panel.setEnabled(self.current_worker is not None)
+        if self.current_worker is not None:
+            self.load_worker_to_ui(self.workers[self.current_worker])
+
 
     def load_worker_to_ui(self, worker):
         npc = worker.get("npcDataRole") if isinstance(worker, dict) else {}
@@ -2732,6 +2957,12 @@ class ES3Editor(ExtraPagesMixin, QMainWindow):
     def on_worker_field_changed(self, key):
         w = self.current_worker_dict()
         if w is None or self.worker_entries.get(key) is None:
+            return
+        try:
+            number(self.worker_entries[key].text(), label=key)
+        except ValueError as exc:
+            QMessageBox.warning(self, "输入无效", str(exc))
+            self.load_worker_to_ui(w)
             return
         if key == "money":
             npc = w.setdefault("npcDataRole", {})

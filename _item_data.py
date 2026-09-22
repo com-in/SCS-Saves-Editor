@@ -27,3 +27,6 @@ _USER_ITEM_B = (
 )
 
 USER_ITEM_NAME = _restore(_USER_ITEM_B)
+
+# 2026-09-22: F:/GameUnpack/物品ID与名称对照.json (解包本地化表)
+USER_ITEM_NAME.update({156: '桌子', 157: '鞭子', 158: '蓝色迪斯科灯', 159: '绿色迪斯科灯', 160: '黄色迪斯科灯', 161: '互动', 162: '扫地机器人', 163: '食品储藏柜'})
