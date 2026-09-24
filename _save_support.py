@@ -85,9 +85,35 @@ def validate_changes(data, original):
             number(value.get('timeInterval'), label='采购间隔', minimum=1, maximum=360)
 
 
+def prepare_es3_document(data):
+    """Copy the document, repairing sequential ES3 Unity value readers.
+
+    The game's reader discards each property name and consumes x, y, z, w
+    sequentially. Older editor versions passed dicts through QVariantMap,
+    which sorted them to w, x, y, z. Values must remain attached to their
+    original names; never rotate or normalize them to compensate for this.
+    Vector2/3/4, Color/Color32 and Rect also read components sequentially.
+    Match only complete numeric component sets, preserving unknown objects,
+    additional fields, array order and all values.
+    """
+    if isinstance(data, list):
+        return [prepare_es3_document(value) for value in data]
+    if isinstance(data, dict):
+        keys = data.keys()
+        if data and all(
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                for value in data.values()):
+            for components in ('xy', 'xyz', 'xyzw', 'rgba', ('x', 'y', 'width', 'height')):
+                if set(data) == set(components):
+                    keys = components
+                    break
+        return {key: prepare_es3_document(data[key]) for key in keys}
+    return data
+
+
 def atomic_write(path, data, *, backup=True):
     validate_document(data)
-    content = json.dumps(data, ensure_ascii=False, indent='\t', allow_nan=False)
+    content = json.dumps(prepare_es3_document(data), ensure_ascii=False, indent='\t', allow_nan=False)
     target = Path(path)
     backup_path = None
     if backup and target.exists():

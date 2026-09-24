@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog, QMessageBox
-from _save_support import atomic_write, validate_changes, validate_document
+from _save_support import atomic_write, validate_changes, validate_document, prepare_es3_document
 
 
 class DocumentMixin:
@@ -63,7 +63,7 @@ class DocumentMixin:
         self.save_as_button.setEnabled(loaded)
         self.check_button.setEnabled(loaded)
         for row, page in enumerate(self.nav_items):
-            if page[2] not in ('home', 'memory'):
+            if page[2] not in ('home', 'memory', 'map3d'):
                 self.stack.widget(row).setEnabled(loaded)
         for key, label in self.overview_values.items():
             value = self.es3_get(key)
@@ -96,7 +96,7 @@ class DocumentMixin:
             self.save_ui_to_data()
             self.merge_json_tabs()
             validate_changes(self.data, getattr(self, '_disk_snapshot', original))
-            return self.data
+            return prepare_es3_document(self.data)
         finally:
             self.data, self.workers = original, workers
 

@@ -20,6 +20,8 @@ import json
 import copy
 import uuid
 import threading
+import math
+import statistics
 from datetime import datetime
 
 from PySide6.QtGui import QDesktopServices
@@ -32,9 +34,10 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem,
     QFileDialog, QMessageBox, QSplitter, QFrame, QStatusBar, QToolButton,
     QStackedWidget, QListWidgetItem, QSizePolicy, QComboBox, QDialog, QSpinBox,
+    QProgressBar, QMenu,
 )
-from PySide6.QtGui import QFont, QIcon, QColor, QPixmap
-from PySide6.QtCore import Qt, QSignalBlocker, QVariantAnimation, QEasingCurve, QTimer, QSize, QThread, Signal, QSettings
+from PySide6.QtGui import QFont, QIcon, QColor, QPixmap, QPolygon
+from PySide6.QtCore import Qt, QSignalBlocker, QVariantAnimation, QEasingCurve, QTimer, QSize, QThread, Signal, QSettings, QPoint, QStandardPaths
 
 from _memscan import MemScanner, find_game_process
 from _role_data import ROLE_NAME as _ROLE_NAME  # 员工职业 id->中文名 映射（混淆数据）
@@ -43,6 +46,7 @@ from _extra_pages import ExtraPagesMixin
 from _document import DocumentMixin
 from _editor_ui import EditorUiMixin
 from _save_support import number, integer_list, validate_document, validate_changes, atomic_write
+from _map_items import quaternion, yaw_rotation, heading, rotate_world_y, box_corners, world_corners
 
 # ==================== 主题配置 ====================
 # 默认亮色
@@ -171,6 +175,35 @@ QLabel#DocumentBadge {{ color: {S}; background: {CARD}; border: 1px solid {BD}; 
 QLabel#DocumentBadge[dirty="true"] {{ color: {W}; border-color: {W}; }}
 QFrame#CardBox {{ background: {CARD}; border: 1px solid {BD}; border-radius: 8px; }}
 QFrame#FieldBox {{ background: {CARD}; border: 1px solid {BD}; border-radius: 6px; }}
+
+QFrame#ToolPanel {{ background: {CARD}; border: 1px solid {BD}; border-radius: 10px; }}
+QWidget#PanelBody {{ background: transparent; }}
+QLabel#PanelTitle {{ color: {T}; font-size: 13px; font-weight: bold; }}
+QLabel#EmptyTitle {{ color: {TS}; font-size: 15px; font-weight: bold; }}
+QLabel#StatusChip {{ background: {BG}; color: {TS}; border: 1px solid {BD}; border-radius: 6px; padding: 4px 8px; }}
+QLabel#StatusChip[active="true"] {{ color: {ACC}; border-color: {ACC}; }}
+QWidget#MapPage QPushButton, QWidget#MemoryPage QPushButton {{ padding: 7px 12px; }}
+QPushButton#Secondary {{ background: {ENTRY}; color: {T}; border: 1px solid {BD}; }}
+QPushButton#Secondary:hover {{ border-color: {ACC}; color: {ACC}; }}
+QPushButton#ModeButton {{ background: {CARD}; color: {ACC}; border: 1px solid {ACC}; }}
+QPushButton#ModeButton:checked, QPushButton#Secondary:checked {{ background: {ACC}; color: {BG}; }}
+QWidget#MapPage QPushButton:disabled, QWidget#MemoryPage QPushButton:disabled {{
+    background: {BG}; color: {TS}; border: 1px solid {BD};
+}}
+QWidget#MemoryPage QPushButton#Ghost:checked {{ background: {ACC}; color: {BG}; border-color: {ACC}; }}
+QWidget#MapPage QToolButton {{ background: {CARD}; color: {T}; border: 1px solid {BD}; border-radius: 6px; padding: 7px 10px; }}
+QWidget#MapPage QToolButton:hover {{ border-color: {ACC}; }}
+QMenu {{ background: {CARD}; color: {T}; border: 1px solid {BD}; padding: 5px; }}
+QMenu::item {{ padding: 7px 22px 7px 12px; border-radius: 4px; }}
+QMenu::item:selected {{ background: {ACC}; color: {BG}; }}
+QTreeWidget#MemoryResults {{
+    background: {ENTRY}; alternate-background-color: {BG}; color: {T};
+    border: 1px solid {BD}; border-radius: 6px; outline: none;
+    selection-background-color: {ACC}; selection-color: {BG};
+}}
+QTreeWidget#MemoryResults::item {{ padding: 3px 0; }}
+QProgressBar {{ border: none; border-radius: 3px; background: {BG}; max-height: 6px; }}
+QProgressBar::chunk {{ background: {ACC}; border-radius: 3px; }}
 
 QTableWidget {{
     background: {ENTRY}; border: 1px solid {BD}; border-radius: 6px;
@@ -323,6 +356,702 @@ class Card(QFrame):
         self._lay.addWidget(lab)
 
 
+class Map3DWidget(QWidget):
+    """轻量级存档坐标 3D 预览（无需额外 OpenGL/绘图库）。"""
+    selection_changed = Signal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.points = []
+        self.point_details = {}
+        self.hovered_point = None
+        self.scene = None
+        self.placement_enabled = False
+        self.placement_callback = None
+        self.move_callback = None
+        self.rotate_callback = None
+        self.delete_callback = None
+        self.floor_changed_callback = None
+        self.preview_point = None
+        self.preview_yaw = 0.0
+        self.preview_item_id = None
+        self._points_revision = 0
+        self._drag_marker = None
+        self._drag_start = None
+        self._drag_offset = None
+        self.selected_marker = None
+        self._bounds_cache = None
+        self._bounds_cache_key = None
+        self._framing_bounds = None
+        self._projected_tri_cache = None
+        self._projected_tri_cache_key = None
+        self._clean_cache_key = None
+        self._floor_cache_key = None
+        self._point_floor_cache_key = None
+        self._point_floor_cache = {}
+        self._projection_cache_key = None
+        self._marker_cache_key = None
+        self._item_geometry_cache = {}
+        self._item_render_cache_key = None
+        self._item_render_cache = {}
+        self._scene_render_cache = None
+        self._scene_geometry_cache = None
+        self.view_mode = "save"
+        self.floor_mode = "current"
+        self.floor_levels = []
+        self.floor_index = 0
+        self.yaw, self.pitch, self.zoom = -20.0, 72.0, 1.0
+        self.pan_x = self.pan_y = 0.0
+        self._pan_last = None
+        self._last = None
+        self.setMinimumSize(320, 240)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def set_points(self, points, details=None, preserve_view=False):
+        previous = self._scene_bounds() if preserve_view else None
+        if not preserve_view:
+            self._clear_map_selection()
+        self._framing_bounds = previous[:7] if previous else None
+        self.points = points or []
+        self.point_details = details or {}
+        self.hovered_point = None
+        self._points_revision += 1
+        self._item_geometry_cache.clear()
+        self._bounds_cache_key = None
+        self.update()
+
+    def set_scene(self, scene):
+        self.scene = scene
+        self._point_floor_cache_key = self._floor_cache_key = None
+        self._framing_bounds = None
+        self._clear_map_selection()
+        self._scene_render_cache = self._scene_geometry_cache = None
+        self._marker_cache_key = None
+        self._item_geometry_cache.clear()
+        self._item_render_cache_key = None
+        self.floor_levels = list(scene.get("floor_levels", []))
+        self.floor_index = self._nearest_floor_index()
+        self.floor_mode = "level"
+        self._bounds_cache_key = None
+        self._projected_tri_cache_key = None
+        self.update()
+
+    def set_view_mode(self, mode):
+        self.view_mode = mode
+        self.zoom = 1.0
+        self.pan_x = self.pan_y = 0.0
+        self._framing_bounds = None
+        self.preview_point = None
+        self._bounds_cache_key = self._projected_tri_cache_key = None
+        self.update()
+
+    def set_floor_mode(self, mode):
+        self.floor_mode = mode
+        self._clear_map_selection()
+        self._bounds_cache_key = None
+        self._projected_tri_cache_key = None
+        self.update()
+
+    def _nearest_floor_index(self):
+        if not self.floor_levels:
+            return 0
+        reference = self._save_floor_reference()
+        return min(range(len(self.floor_levels)), key=lambda i: abs(self.floor_levels[i] - reference))
+
+    def _save_floor_reference(self):
+        heights = [self._point_floor_height(p) for p in self._clean_points() if p[3] == "放置物品"]
+        return statistics.median(heights) if heights else -1.5
+
+    def set_floor_index(self, index):
+        if not self.floor_levels:
+            return
+        self.floor_index = max(0, min(len(self.floor_levels) - 1, int(index)))
+        self.floor_mode = "level"
+        self._clear_map_selection()
+        self._projected_tri_cache_key = None
+        self.update()
+        if self.floor_changed_callback:
+            self.floor_changed_callback(self.floor_index, len(self.floor_levels), self.floor_levels[self.floor_index])
+
+    def step_floor(self, delta):
+        self.set_floor_index(self.floor_index + int(delta))
+
+    def _clear_map_selection(self):
+        self.selected_marker = self._drag_marker = self.hovered_point = None
+        self.selection_changed.emit(None)
+        self._drag_start = self._drag_offset = None
+        self.preview_point = self._last = None
+        self._pan_last = None
+        self.setCursor(Qt.CrossCursor if self.placement_enabled else Qt.ArrowCursor)
+
+    def set_camera_preset(self, mode):
+        self.yaw, self.pitch = (0.0, 90.0) if mode == "top" else (-25.0, 55.0)
+        self.preview_point = None
+        self._projected_tri_cache_key = None
+        self.update()
+
+    def _floor_reference(self):
+        if self.floor_mode == "level" and self.floor_levels:
+            return self.floor_levels[self.floor_index]
+        key = (self._points_revision, self.floor_mode, tuple(self.floor_levels))
+        if self._floor_cache_key == key:
+            return self._floor_cache
+        base = self._save_floor_reference()
+        if self.floor_levels:
+            nearest = min(range(len(self.floor_levels)), key=lambda i: abs(self.floor_levels[i] - base))
+            if self.floor_mode == "upper":
+                nearest = min(nearest + 1, len(self.floor_levels) - 1)
+            result = self.floor_levels[nearest]
+        else:
+            result = base + (3.5 if self.floor_mode == "upper" else 0.0)
+        self._floor_cache_key, self._floor_cache = key, result
+        return result
+
+    def _visible_scene_objects(self, kind):
+        reference = self._floor_reference()
+        for obj in (self.scene or {}).get("objects", []):
+            if obj.get("kind") != kind:
+                continue
+            if self.floor_mode == "level":
+                if kind == "floor" and abs(self._scene_floor_height(obj)-reference) > 0.35:
+                    continue
+                if kind == "wall" and not self._wall_matches_floor(obj, reference):
+                    continue
+            elif self.floor_mode != "all":
+                if kind == "floor" and abs(self._scene_floor_height(obj)-reference) > 1.6:
+                    continue
+                if kind == "wall" and not self._wall_matches_floor(obj, reference):
+                    continue
+            yield obj
+
+    @staticmethod
+    def _scene_floor_height(obj):
+        quad = obj.get("quad") or ()
+        ys = [float(vertex[1]) for vertex in quad if len(vertex) > 1]
+        return sum(ys) / len(ys) if ys else float(obj.get("base_y", 0.0))
+
+    @classmethod
+    def _wall_span(cls, obj):
+        quad = obj.get("quad") or ()
+        ys = [float(vertex[1]) for vertex in quad if len(vertex) > 1]
+        if not ys:
+            base = float(obj.get("base_y", 0.0))
+            return base, base
+        return min(float(obj.get("base_y", min(ys))), min(ys)), max(ys)
+
+    @classmethod
+    def _wall_matches_floor(cls, obj, reference):
+        base, top = cls._wall_span(obj)
+        return base - 0.55 <= reference < top - 1e-6
+
+    def set_placement_mode(self, enabled, callback=None, move_callback=None, rotate_callback=None):
+        self.placement_enabled = enabled
+        self._clear_map_selection()
+        self.placement_callback = callback
+        self.move_callback = move_callback
+        self.rotate_callback = rotate_callback
+        self.preview_point = None
+        self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
+        self.setFocus()
+        self.update()
+
+    def mousePressEvent(self, e):
+        self.setFocus(Qt.MouseFocusReason)
+        if e.button() == Qt.MiddleButton:
+            self._pan_last = e.position()
+            self._last = self._drag_marker = self._drag_start = self._drag_offset = None
+            self.preview_point = self.hovered_point = None
+            self.setCursor(Qt.ClosedHandCursor)
+            self.update()
+            e.accept()
+            return
+        if self._pan_last is not None:
+            e.accept()
+            return
+        if self.placement_enabled and e.button() == Qt.LeftButton and self.placement_callback:
+            point = self.screen_to_ground(e.position().x(), e.position().y())
+            self.preview_point = point
+            if point is not None:
+                self.placement_callback(point, self.preview_yaw)
+            self.update()
+            return
+        if e.button() == Qt.LeftButton:
+            marker = self._pick_placed_marker(e.position().x(), e.position().y())
+            if marker is not None:
+                self.selected_marker = marker
+                self.selection_changed.emit(marker)
+                self._drag_marker = marker
+                self._drag_start = e.position()
+                # Preserve the grabbed point rather than snapping the object's
+                # origin to the cursor (especially visible in the angled view).
+                point = next(p for p in self._visible_points() if self._marker_index(p) == marker)
+                ground = self.screen_to_ground(e.position().x(), e.position().y())
+                self._drag_offset = (point[0]-ground[0], point[2]-ground[2]) if ground else (0, 0)
+                self.preview_point = None
+                self.setCursor(Qt.ClosedHandCursor)
+                self.update()
+                return
+            self.selected_marker = None
+            self.selection_changed.emit(None)
+            self._last = e.position()
+            self.update()
+
+    def _pick_placed_marker(self, sx, sy):
+        point = self._pick_map_point(sx, sy, placed_only=True)
+        return self._marker_index(point) if point else None
+
+    @staticmethod
+    def _marker_index(point):
+        if point[3] != "放置物品":
+            return None
+        try:
+            return int(point[4].rsplit("#", 1)[1]) - 1
+        except (ValueError, IndexError):
+            return None
+
+    def _marker_geometry(self, point, position=None, yaw=None):
+        """Overall bounds, using the same root frame as the prefab's child colliders."""
+        kind, label = point[3:]
+        profile = self._marker_profile(point)
+        width, length, height = {"放置物品": (0.85, 0.60, 0.55),
+                                 "物品": (0.30, 0.30, 0.20),
+                                 "工人": (0.36, 0.36, 1.2),
+                                 "污垢": (0.42, 0.42, 0.02)}.get(kind, (0.4, 0.4, 0.3))
+        center, size = (0, height/2, 0), (width, height, length)
+        if profile:
+            center = tuple((a+b)/2 for a,b in profile['bounds'])
+            size = tuple(b-a for a,b in profile['bounds'])
+        corners = world_corners(box_corners(center, size), self._marker_rotation(point, yaw),
+                                position if position is not None else point[:3])
+        return corners[:4], corners[4:]
+
+    def _marker_profile(self, point):
+        if point[3] != "放置物品":
+            return None
+        item_id = self.preview_item_id if point[4] == "预览" else self.point_details.get(point[3:], {}).get('item_id')
+        return (self.scene or {}).get('item_profiles', {}).get(item_id)
+
+    def _marker_rotation(self, point, yaw=None):
+        if yaw is not None:
+            return yaw_rotation(yaw)
+        detail = self.point_details.get(point[3:], {})
+        return quaternion(detail['rotation']) if 'rotation' in detail else yaw_rotation(detail.get('yaw', 0))
+
+    def _marker_prisms(self, point, position=None, yaw=None):
+        cacheable = position is None and yaw is None and point[4] != "预览"
+        if cacheable and point in self._item_geometry_cache:
+            return self._item_geometry_cache[point]
+        profile = self._marker_profile(point)
+        if not profile:
+            return [self._marker_geometry(point, position, yaw)]
+        rotation = self._marker_rotation(point, yaw)
+        origin = position if position is not None else point[:3]
+        boxes = [world_corners(box, rotation, origin) for box in profile['boxes']]
+        result = [(box[:4], box[4:]) for box in boxes]
+        if cacheable:
+            self._item_geometry_cache[point] = result
+        return result
+
+    def _marker_direction(self, point, position=None, yaw=None):
+        base, top = self._marker_geometry(point, position, yaw)
+        center = tuple(sum(v[i] for v in top)/4 for i in range(3))
+        profile = self._marker_profile(point)
+        length = max(0.1, min(2.0, (profile['bounds'][2][1]-profile['bounds'][2][0])*0.4)) if profile else 0.45
+        from unity_scene_loader import _rotate
+        forward = _rotate(self._marker_rotation(point, yaw), (0, 0, length))
+        return center, tuple(a+b for a,b in zip(center, forward))
+
+    def set_preview_item(self, item_id):
+        self.preview_item_id = item_id
+        self.update()
+
+    def _pick_map_point(self, sx, sy, placed_only=False):
+        bounds = self._scene_bounds()
+        if not bounds:
+            return None
+        *_, midx, midz, scale, cx, cy = bounds
+        hits = []
+        cursor = QPoint(int(sx), int(sy))
+        key = (bounds, self.yaw, self.pitch, self._floor_reference(), self._points_revision,
+               self.floor_mode, self.floor_index)
+        if self._marker_cache_key != key:
+            markers = []
+            for point in self._visible_points():
+                faces = []
+                for base, top in self._marker_prisms(point):
+                    faces.extend([top, base] + [[base[i], base[(i+1)%4], top[(i+1)%4], top[i]] for i in range(4)])
+                projected = [[self._project(x-midx, y, z-midz, scale, cx, cy) for x,y,z in face] for face in faces]
+                center = tuple(sum(p[i] for p in projected[0])/4 for i in range(3))
+                polygons = [QPolygon([QPoint(round(p[0]), round(p[1])) for p in face]) for face in projected]
+                flat = [p for face in projected for p in face]
+                bounds2d = (min(p[0] for p in flat)-6, max(p[0] for p in flat)+6,
+                            min(p[1] for p in flat)-6, max(p[1] for p in flat)+6)
+                markers.append((point, center, polygons, bounds2d))
+            self._marker_cache, self._marker_cache_key = markers, key
+        for point, center, polygons, (left,right,top,bottom) in self._marker_cache:
+            if placed_only and self._marker_index(point) is None:
+                continue
+            if not (left <= sx <= right and top <= sy <= bottom):
+                continue
+            # Use the same top and side faces as rendering, with a small target for distant objects.
+            inside = any(poly.boundingRect().contains(cursor) and poly.containsPoint(cursor, Qt.OddEvenFill)
+                         for poly in polygons)
+            if inside or (center[0]-sx)**2 + (center[1]-sy)**2 <= 6**2:
+                hits.append((center[2], point))
+        return max(hits, key=lambda hit: hit[0])[1] if hits else None
+
+    def _scene_bounds(self, pts=None):
+        pts = self._visible_points() if pts is None else pts
+        key = (id(self.scene), self._points_revision, self.width(), self.height(),
+               self.zoom, self.view_mode, self.floor_mode, self.floor_index,
+               len(pts))
+        if self._bounds_cache_key == key:
+            return self._panned_bounds(self._bounds_cache)
+        if self._framing_bounds is not None:
+            bx0, bx1, bz0, bz1, span, midx, midz = self._framing_bounds
+        else:
+            verts = [v for obj in (self.scene or {}).get("objects", []) for tri in obj.get("triangles", []) for v in tri]
+            # Keep the same horizontal framing when switching storeys.
+            placed = [(q[0], q[2]) for q in self._clean_points() if q[3] == "放置物品"]
+            coords = placed if self.view_mode == "save" and placed else (
+                [(v[0], v[2]) for v in verts] + [(q[0], q[2]) for q in pts])
+            if not coords:
+                self._bounds_cache_key, self._bounds_cache = key, None
+                return None
+            xs, zs = zip(*coords)
+            pad = max(8.0, max(max(xs)-min(xs), max(zs)-min(zs)) * 0.18) if self.view_mode == "save" and placed else max(max(xs)-min(xs), max(zs)-min(zs), 1.0) * 0.08 + 0.5
+            bx0, bx1, bz0, bz1 = min(xs)-pad, max(xs)+pad, min(zs)-pad, max(zs)+pad
+            span = max(bx1-bx0, bz1-bz0, 1.0)
+            midx, midz = (bx0+bx1)/2, (bz0+bz1)/2
+        scale = min(self.width(), self.height()) * 0.78 / span * self.zoom
+        result = (bx0, bx1, bz0, bz1, span, midx, midz, scale, self.width()/2, self.height()/2)
+        self._bounds_cache_key, self._bounds_cache = key, result
+        return self._panned_bounds(result)
+
+    def _panned_bounds(self, bounds):
+        # Translate the camera origin without rescanning scene bounds per move.
+        if bounds is None:
+            return None
+        return (*bounds[:-2], bounds[-2]+self.pan_x, bounds[-1]+self.pan_y)
+
+    def screen_to_ground(self, sx, sy):
+        """Map screen position to a Unity scene surface, with a y=0 fallback."""
+        import math
+        bounds = self._scene_bounds()
+        if not bounds: return None
+        bx0, bx1, bz0, bz1, span, midx, midz, scale, cx, cy = bounds
+        sin_pitch = math.sin(math.radians(self.pitch))
+        if abs(sin_pitch) < 0.08:
+            return None
+        xx = (sx-cx)/scale
+        zz = (self._floor_reference()*math.cos(math.radians(self.pitch)) - (sy-cy)/scale)/sin_pitch
+        ya = math.radians(self.yaw)
+        fallback_x = xx*math.cos(ya) + zz*math.sin(ya) + midx
+        fallback_z = -xx*math.sin(ya) + zz*math.cos(ya) + midz
+
+        def barycentric(px, py, a, b, c):
+            den = (b[1]-c[1])*(a[0]-c[0]) + (c[0]-b[0])*(a[1]-c[1])
+            if abs(den) < 1e-8:
+                return None
+            u = ((b[1]-c[1])*(px-c[0]) + (c[0]-b[0])*(py-c[1]))/den
+            v = ((c[1]-a[1])*(px-c[0]) + (a[0]-c[0])*(py-c[1]))/den
+            w = 1-u-v
+            return (u, v, w) if min(u, v, w) >= -0.015 else None
+
+        # Cache projected triangles; pointer movement only tests triangles near the cursor.
+        cache_key = (id(self.scene), self.floor_mode, self.floor_index, self._points_revision,
+                     self.width(), self.height(), self.yaw, self.pitch, self.zoom, scale, midx, midz, cx, cy)
+        if self._projected_tri_cache_key != cache_key:
+            projected_cache = []
+            for obj in self._visible_scene_objects("floor"):
+                for tri in obj.get("triangles", []):
+                    projected = tuple(self._project(v[0]-midx, v[1], v[2]-midz, scale, cx, cy) for v in tri)
+                    projected_cache.append((min(v[0] for v in projected), max(v[0] for v in projected),
+                        min(v[1] for v in projected), max(v[1] for v in projected), projected, tri))
+            self._projected_tri_cache = projected_cache
+            self._projected_tri_cache_key = cache_key
+        hits = []
+        for minx, maxx, miny, maxy, projected, tri in self._projected_tri_cache or ():
+            if sx < minx or sx > maxx or sy < miny or sy > maxy:
+                continue
+            weights = barycentric(sx, sy, projected[0], projected[1], projected[2])
+            if weights:
+                depth = sum(weights[i] * projected[i][2] for i in range(3))
+                world = tuple(sum(weights[i] * tri[i][axis] for i in range(3)) for axis in range(3))
+                hits.append((depth, world))
+        if hits:
+            return max(hits, key=lambda hit: hit[0])[1]
+        if self.scene:
+            return None
+        return (fallback_x, 0.0, fallback_z)
+
+    def mouseMoveEvent(self, e):
+        if self._pan_last is not None and e.buttons() & Qt.MiddleButton:
+            self._pan_to(e.position())
+            e.accept()
+            return
+        if self._drag_marker is not None and e.buttons() & Qt.LeftButton:
+            if self._drag_start is not None and (e.position()-self._drag_start).manhattanLength() < QApplication.startDragDistance():
+                return
+            self._drag_start = None
+            self.preview_point = self._drag_position(e.position())
+            self.update()
+            return
+        if self.placement_enabled and not (e.buttons() & Qt.LeftButton):
+            self.preview_point = self.screen_to_ground(e.position().x(), e.position().y())
+            self.update()
+            return
+        if self._last is not None and e.buttons() & Qt.LeftButton:
+            p = e.position(); d = p - self._last; self._last = p
+            self.yaw += d.x() * 0.65; self.pitch = max(25, min(90, self.pitch + d.y() * 0.5)); self.update()
+            return
+        hovered = self._pick_map_point(e.position().x(), e.position().y())
+        if hovered != self.hovered_point:
+            self.hovered_point = hovered
+            self.setCursor(Qt.PointingHandCursor if hovered else Qt.ArrowCursor)
+            self.update()
+
+    def _drag_position(self, position):
+        ground = self.screen_to_ground(position.x(), position.y())
+        if ground is None:
+            return None
+        dx, dz = self._drag_offset or (0, 0)
+        return (ground[0]+dx, ground[1], ground[2]+dz)
+
+    def _pan_to(self, position):
+        delta = position - self._pan_last
+        self._pan_last = position
+        self.pan_x += delta.x()
+        self.pan_y += delta.y()
+        self.update()
+
+    def leaveEvent(self, event):
+        self.hovered_point = None
+        self.update()
+        super().leaveEvent(event)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MiddleButton:
+            if self._pan_last is not None:
+                self._pan_to(e.position())
+            self._pan_last = None
+            if self.placement_enabled:
+                self.preview_point = self.screen_to_ground(e.position().x(), e.position().y())
+            self.setCursor(Qt.CrossCursor if self.placement_enabled else Qt.ArrowCursor)
+            self.update()
+            e.accept()
+            return
+        if e.button() != Qt.LeftButton:
+            return
+        if self._drag_marker is not None:
+            index, self._drag_marker = self._drag_marker, None
+            if self._drag_start is None:
+                self.preview_point = self._drag_position(e.position())
+            if self.preview_point is not None and self.move_callback:
+                self.move_callback(index, self.preview_point)
+            self._drag_start = self._drag_offset = None
+            self.preview_point = None
+            self.setCursor(Qt.CrossCursor if self.placement_enabled else Qt.ArrowCursor)
+            self.update()
+            return
+        self._last = None
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Delete:
+            if not e.isAutoRepeat():
+                self.delete_selected_item()
+            e.accept()
+            return
+        if e.key() in (Qt.Key_Q, Qt.Key_Left):
+            self.rotate_item(-15.0); e.accept(); return
+        if e.key() in (Qt.Key_E, Qt.Key_Right):
+            self.rotate_item(15.0); e.accept(); return
+        super().keyPressEvent(e)
+
+    def delete_selected_item(self):
+        if self.placement_enabled or self.selected_marker is None or not self.delete_callback:
+            return False
+        if self._drag_marker is not None or self._pan_last is not None:
+            return False
+        if not any(self._marker_index(point) == self.selected_marker for point in self._visible_points()):
+            self._clear_map_selection()
+            self.update()
+            return False
+        if self.delete_callback(self.selected_marker):
+            self._clear_map_selection()
+            self.update()
+            return True
+        return False
+
+    def rotate_item(self, degrees):
+        if self.placement_enabled:
+            self.preview_yaw = (self.preview_yaw + degrees) % 360.0
+        elif self.selected_marker is not None and self.rotate_callback:
+            self.rotate_callback(self.selected_marker, degrees)
+        self.update()
+
+    def wheelEvent(self, e):
+        self.zoom = max(.15, min(8.0, self.zoom * (1.12 if e.angleDelta().y() > 0 else .89)))
+        if self.placement_enabled:
+            self.preview_point = self.screen_to_ground(e.position().x(), e.position().y())
+        self.update()
+
+    def resizeEvent(self, e):
+        self.preview_point = None
+        super().resizeEvent(e)
+
+    def _project(self, x, y, z, scale, cx, cy):
+        """Unity camera basis: top view has +X right, +Z up, +Y toward the viewer."""
+        key = (self.yaw, self.pitch, self._floor_reference())
+        if self._projection_cache_key != key:
+            ya, pi = math.radians(self.yaw), math.radians(self.pitch)
+            self._projection_cache = (math.cos(ya), math.sin(ya), math.cos(pi), math.sin(pi))
+            self._projection_cache_key = key
+        ca, sa, cp, sp = self._projection_cache
+        y -= key[2]
+        xx, zz = x * ca - z * sa, x * sa + z * ca
+        yy, zz2 = y * cp + zz * sp, y * sp - zz * cp
+        return cx + xx * scale, cy - yy * scale, zz2
+
+    def _clean_points(self):
+        """过滤 NaN/Inf 与掉落物异常高度坐标。"""
+        if self._clean_cache_key == self._points_revision:
+            return self._clean_cache
+        out = []
+        for x, y, z, kind, label in self.points:
+            try:
+                x, y, z = float(x), float(y), float(z)
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+                continue
+            if abs(y) > 1000:
+                continue
+            out.append((x, y, z, kind, label))
+        self._clean_cache_key, self._clean_cache = self._points_revision, out
+        return out
+
+    def _visible_points(self):
+        """Return only objects belonging to the active floor.
+
+        The level selector controls both scene geometry and save objects.  A
+        small vertical tolerance accounts for objects whose origin is slightly
+        above or below the floor collider while keeping adjacent floors apart.
+        """
+        points = self._clean_points()
+        if self.floor_mode == "all" or not self.floor_levels:
+            return points
+        reference = self._floor_reference()
+        tolerance = 1.15
+        return [point for point in points
+                if abs(self._point_floor_height(point) - reference) <= tolerance]
+
+    @staticmethod
+    def _point_in_xz_quad(x, z, quad, padding=0.0):
+        """Return whether a point is inside or close to a scene quad footprint."""
+        if len(quad) < 3:
+            return False
+        vertices = [(float(vertex[0]), float(vertex[2])) for vertex in quad]
+        if not (min(v[0] for v in vertices)-padding <= x <= max(v[0] for v in vertices)+padding
+                and min(v[1] for v in vertices)-padding <= z <= max(v[1] for v in vertices)+padding):
+            return False
+        area = sum(a[0]*b[1]-b[0]*a[1] for a,b in zip(vertices,vertices[1:]+vertices[:1]))
+        signs = []
+        for index, current in enumerate(vertices):
+            nxt = vertices[(index + 1) % len(vertices)]
+            cross = ((nxt[0] - current[0]) * (z - current[1])
+                     - (nxt[1] - current[1]) * (x - current[0]))
+            signs.append(cross)
+        if abs(area) > 1e-8 and (all(value >= -1e-6 for value in signs) or all(value <= 1e-6 for value in signs)):
+            return True
+        if padding <= 0:
+            return False
+        for index, current in enumerate(vertices):
+            nxt = vertices[(index + 1) % len(vertices)]
+            dx, dz = nxt[0] - current[0], nxt[1] - current[1]
+            length2 = dx * dx + dz * dz
+            ratio = 0.0 if length2 <= 1e-12 else ((x - current[0]) * dx + (z - current[1]) * dz) / length2
+            ratio = max(0.0, min(1.0, ratio))
+            px, pz = current[0] + ratio * dx, current[1] + ratio * dz
+            if math.hypot(x - px, z - pz) <= padding:
+                return True
+        return False
+
+    def _wall_floor_height(self, point):
+        """Use the supporting storey below a hanging item, never its nearest ceiling.
+
+        Prefer local horizontal floor geometry. Wall spans are secondary
+        evidence when the anchor lies just outside the floor footprint; a
+        height interval fallback covers missing collider data.
+        """
+        if not self.floor_levels:
+            return None
+        x, y, z, kind, label = point
+        detail = self.point_details.get((kind, label), {})
+        definitions = (self.scene or {}).get("item_definitions", {})
+        definition = definitions.get(detail.get("item_id"), {})
+        if not definition.get("is_wall", detail.get("is_wall", False)):
+            return None
+        supporting = []
+        objects = (self.scene or {}).get("objects", [])
+        for surface in objects:
+            if surface.get("kind") != "floor":
+                continue
+            quad = surface.get("quad") or ()
+            if not quad or max(v[1] for v in quad)-min(v[1] for v in quad) > 0.35:
+                continue
+            height = self._scene_floor_height(surface)
+            if height > y + 0.02:
+                continue
+            level = min(self.floor_levels, key=lambda value: abs(value-height))
+            if abs(height-level) > 0.35 or level > y + 0.02:
+                continue
+            if self._point_in_xz_quad(x,z,quad,padding=0.35):
+                supporting.append(level)
+        if supporting:
+            return max(supporting)
+        candidates = []
+        for wall in objects:
+            if wall.get("kind") != "wall":
+                continue
+            base, top = self._wall_span(wall)
+            if not (base - 0.65 <= y <= top + 0.65):
+                continue
+            if not self._point_in_xz_quad(x, z, wall.get("quad") or (), padding=0.9):
+                continue
+            levels = [level for level in self.floor_levels
+                      if base-0.55 <= level <= y+0.02 and level < top]
+            if not levels:
+                continue
+            floor = max(levels)
+            footprint_distance = min(
+                math.hypot(x - vertex[0], z - vertex[2])
+                for vertex in (wall.get("quad") or ((x, y, z),)))
+            candidates.append((footprint_distance, abs(base - floor), floor))
+        if candidates:
+            return min(candidates)[2]
+        return max((level for level in self.floor_levels if level <= y+0.02),
+                   default=min(self.floor_levels))
+
+    def _point_floor_height(self, point):
+        key = (self._points_revision, id(self.scene), tuple(self.floor_levels))
+        if self._point_floor_cache_key != key:
+            self._point_floor_cache_key = key
+            self._point_floor_cache = {}
+        if point in self._point_floor_cache:
+            return self._point_floor_cache[point]
+        wall_floor = self._wall_floor_height(point)
+        result = point[1] if wall_floor is None else wall_floor
+        self._point_floor_cache[point] = result
+        return result
+
+    def paintEvent(self, _):
+        from _map_painter import draw_map
+        draw_map(self)
+
+
 class _MemScanWorker(QThread):
     """后台内存扫描线程：一次读内存+多目标匹配，避免卡 UI。"""
     finished_ok = Signal(dict)   # {name:[addr,...], "_elapsed":秒}
@@ -334,9 +1063,15 @@ class _MemScanWorker(QThread):
         self.targets = targets      # [(name, value, vtype)]
         self.regions = regions
         self.workers = workers
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        self._cancelled.set()
+        self.scanner.cancel()
 
     def _tick(self, _=0):
-        pass
+        if self._cancelled.is_set():
+            raise RuntimeError("扫描已取消")
 
     def run(self):
         try:
@@ -344,10 +1079,91 @@ class _MemScanWorker(QThread):
             res = self.scanner.first_scan_multi(
                 self.targets, regions=self.regions,
                 workers=self.workers, progress=self._tick)
+            if self._cancelled.is_set() or self.scanner.cancelled:
+                raise RuntimeError("扫描已取消")
             res["_elapsed"] = time.time() - t0
             self.finished_ok.emit(res)
         except Exception as e:
             self.failed.emit(str(e))
+
+
+class _MemRefineWorker(QThread):
+    """重读全部候选并按当前值过滤；结果同时携带下一轮基准。"""
+    finished_ok = Signal(dict, dict, int, int, float)
+    failed = Signal(str)
+
+    def __init__(self, scanner, hits, types, previous, targets, mode):
+        super().__init__()
+        self.scanner = scanner
+        self.hits = {name: list(addrs) for name, addrs in hits.items()}
+        self.types = dict(types)
+        self.previous = dict(previous or {})
+        self.targets = dict(targets)
+        self.mode = mode
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        self._cancelled.set()
+
+    def run(self):
+        try:
+            started = time.time()
+            result, snapshot = {}, {}
+            kept = dropped = 0
+            for name, addresses in self.hits.items():
+                value_type = self.types.get(name, "int32")
+                target = self.targets.get(name)
+                selected = []
+                for address in addresses:
+                    if self._cancelled.is_set():
+                        return
+                    current = self.scanner.read_value(address, value_type, None)
+                    if current is None:
+                        dropped += 1
+                        continue
+                    previous = self.previous.get(address)
+                    if self.mode == "changed":
+                        matches = previous is not None and current != previous
+                    elif self.mode == "unchanged":
+                        matches = previous is not None and current == previous
+                    else:
+                        matches = target is not None and current == target
+                    if matches:
+                        selected.append(address)
+                        snapshot[address] = current
+                        kept += 1
+                    else:
+                        dropped += 1
+                if selected:
+                    result[name] = selected
+            self.finished_ok.emit(result, snapshot, kept, dropped, time.time() - started)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class _SceneLoadWorker(QThread):
+    finished_ok = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+
+    def run(self):
+        try:
+            from unity_scene_loader import load_scene_cached
+            from _unity_item_profiles import load_item_profiles
+            cache_dir = os.path.join(QStandardPaths.writableLocation(QStandardPaths.CacheLocation), "unity_scene")
+            scene = load_scene_cached(self.path, cache_dir=cache_dir)
+            try:
+                result = load_item_profiles(os.path.dirname(self.path), cache_dir)
+                scene['item_profiles'] = result['profiles']
+                scene['item_definitions'] = result['definitions']
+            except Exception as exc:
+                scene['item_profile_error'] = str(exc)
+            self.finished_ok.emit(scene)
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
@@ -486,6 +1302,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
             ("🐱", "宠物猫", "cat"),
             ("🚚", "配送点", "delivery"),
             ("✈️", "机场队列", "airport"),
+            ("🌐", "游戏地图", "map3d"),
             ("🔬", "内存 BYCT", "memory"),
             ("🔓", "解锁管理", "unlock"),
             ("⚙️", "其他", "other"),
@@ -500,7 +1317,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
             ("🎮 游戏", ["growth", "purchase", "municipal", "interior",
                         "bodyguard", "tutorial", "schedule", "gamestats",
                         "cat", "delivery", "airport"]),
-            ("🔧 工具", ["memory", "unlock", "other"]),
+            ("🔧 工具", ["map3d", "memory", "unlock", "other"]),
         ]
         self._nav_leaves = []          # 叶子项，顺序 == stack 页索引
         self._nav_group_items = []     # 分组头项
@@ -585,6 +1402,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         self.tab_cat = QWidget()
         self.tab_delivery = QWidget()
         self.tab_airport = QWidget()
+        self.tab_map3d = QWidget()
         self.tab_memory = QWidget()
         self.tab_story = QWidget()   # 合并页：银行还款 / 剧情解锁 / 教程解锁
         self.tab_other = QWidget()
@@ -595,7 +1413,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
                      self.tab_interior,
                      self.tab_bodyguard, self.tab_tutorial, self.tab_schedule,
                      self.tab_gamestats, self.tab_cat, self.tab_delivery, self.tab_airport,
-                     self.tab_memory, self.tab_story, self.tab_other):
+                     self.tab_map3d, self.tab_memory, self.tab_story, self.tab_other):
             self.stack.addWidget(page)
         rv.addWidget(self.stack, 1)
 
@@ -615,7 +1433,9 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         self.build_crypto_tab()
         self.build_upgrade_tab()
         self.build_memory_tab()
-        self.build_json_tab()  # 物品/放置/其他
+        self.build_map3d_tab()
+        self.build_json_tab()  # 物品
+        self.build_placed_and_other_tab()  # 放置物品/其他
         self.build_debt_story_tutorial_tabs()  # 银行债务/剧情解锁/教程解锁
         self.build_extra_tabs()  # 新增解包项：成长/采购/市政/装修/其他数据
         self.build_welcome_tab()  # 首页：欢迎页 + 文件操作
@@ -641,6 +1461,8 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         self._last_page_row = row
         if 0 <= row < self.stack.count():
             self.stack.setCurrentIndex(row)
+        if self._nav_keys[row] == "map3d" and not self.map3d_view.scene:
+            self.load_game_scene()
         self._maybe_show_mem_force_read(row)
 
     def on_nav_item_clicked(self, item, column=0):
@@ -1014,10 +1836,18 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
 
     # ---------- 内存修改（外部进程内存扫描，不写入存档文件） ----------
     def build_memory_tab(self):
+        self.tab_memory.setObjectName("MemoryPage")
         lay = QVBoxLayout(self.tab_memory)
-        lay.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, 10)
-        lay.setSpacing(SECTION_SPACING)
-        self._page_header(lay, "🔬 内存 BYCT", "直接扫描游戏进程内存并修改数值（不写入存档文件）")
+        lay.setContentsMargins(PAGE_MARGIN, 12, PAGE_MARGIN, 10)
+        lay.setSpacing(10)
+        title_bar = QHBoxLayout()
+        title = QLabel("内存编辑")
+        title.setObjectName("PageTitle")
+        title_bar.addWidget(title)
+        subtitle = QLabel("扫描目标，筛选地址，写入游戏")
+        subtitle.setObjectName("Muted")
+        title_bar.addWidget(subtitle, 1)
+        lay.addLayout(title_bar)
 
         self._mem_scanner = None    # MemScanner（附加到游戏进程）
         self._mem_targets = []      # [(name, value, vtype)] 从存档提取的扫描目标
@@ -1025,117 +1855,374 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         self._mem_rows = []         # 结果表每行: (name, addr, vtype)
         self._mem_prev = None       # 二次扫描的基准快照 {addr: 上次扫描时的值}
         self._mem_nav_row = self._nav_keys.index("memory")
+        self._mem_busy = False
+        self._mem_worker = None
 
-        # 1) 进程区
-        prow = QHBoxLayout(); prow.setSpacing(8)
+        connection = QFrame()
+        connection.setObjectName("ToolPanel")
+        connection_layout = QGridLayout(connection)
+        connection_layout.setContentsMargins(12, 10, 12, 10)
+        connection_layout.setHorizontalSpacing(10)
+        connection_layout.setVerticalSpacing(6)
+        process_title = QLabel("游戏进程")
+        process_title.setObjectName("PanelTitle")
+        connection_layout.addWidget(process_title, 0, 0)
         self.mem_proc_lbl = QLabel("检测游戏进程…")
         self.mem_proc_lbl.setObjectName("Muted")
-        btn_refresh = QPushButton("🔍 检测进程")
-        btn_refresh.setObjectName("Ghost")
+        self.mem_proc_lbl.setWordWrap(True)
+        self.mem_proc_lbl.setMinimumWidth(0)
+        btn_refresh = QPushButton("检测进程")
+        btn_refresh.setObjectName("Secondary")
         btn_refresh.clicked.connect(self._mem_refresh_process)
-        prow.addWidget(self.mem_proc_lbl, 1)
-        prow.addWidget(btn_refresh)
-        lay.addLayout(prow)
-
-        # 2) 存档区
-        srow = QHBoxLayout(); srow.setSpacing(8)
+        self._mem_refresh_btn = btn_refresh
+        connection_layout.addWidget(self.mem_proc_lbl, 0, 1)
+        connection_layout.addWidget(btn_refresh, 0, 2)
+        save_title = QLabel("参考存档")
+        save_title.setObjectName("PanelTitle")
+        connection_layout.addWidget(save_title, 1, 0)
         base = os.path.basename(self.file_path) if self.file_path else "未选择存档"
         self.mem_save_lbl = QLabel(f"当前存档: {base}")
         self.mem_save_lbl.setObjectName("Muted")
-        btn_choose = QPushButton("💾 选择使用的存档")
-        btn_choose.setObjectName("Ghost")
+        self.mem_save_lbl.setWordWrap(True)
+        self.mem_save_lbl.setMinimumWidth(0)
+        btn_choose = QPushButton("选择存档")
+        btn_choose.setObjectName("Secondary")
         btn_choose.clicked.connect(self.find_save_file)
-        srow.addWidget(self.mem_save_lbl, 1)
-        srow.addWidget(btn_choose)
-        lay.addLayout(srow)
+        self._mem_ui_choose_btn = btn_choose
+        connection_layout.addWidget(self.mem_save_lbl, 1, 1)
+        connection_layout.addWidget(btn_choose, 1, 2)
+        connection_layout.setColumnStretch(1, 1)
+        lay.addWidget(connection)
 
-        # 3) 目标提取按钮
-        brow = QHBoxLayout(); brow.setSpacing(8)
-        b = QPushButton("📥 从存档提取扫描目标")
+        self._mem_ui_splitter = QSplitter(Qt.Horizontal)
+        self._mem_ui_splitter.setChildrenCollapsible(False)
+        self._mem_ui_splitter.setHandleWidth(8)
+        targets_panel = QFrame()
+        targets_panel.setObjectName("ToolPanel")
+        targets_panel.setMinimumWidth(250)
+        targets_layout = QVBoxLayout(targets_panel)
+        targets_layout.setContentsMargins(10, 10, 10, 10)
+        targets_layout.setSpacing(8)
+        target_header = QHBoxLayout()
+        title = QLabel("1 · 扫描目标")
+        title.setObjectName("PanelTitle")
+        target_header.addWidget(title)
+        target_header.addStretch(1)
+        self._mem_ui_target_count = QLabel("0 / 0 项")
+        self._mem_ui_target_count.setObjectName("StatusChip")
+        target_header.addWidget(self._mem_ui_target_count)
+        targets_layout.addLayout(target_header)
+        self._mem_ui_target_search = QLineEdit()
+        self._mem_ui_target_search.setPlaceholderText("查找目标字段…")
+        self._mem_ui_target_search.setClearButtonEnabled(True)
+        targets_layout.addWidget(self._mem_ui_target_search)
+        brow = QHBoxLayout(); brow.setSpacing(6)
+        b = QPushButton("提取目标")
+        b.setObjectName("Secondary")
+        b.setToolTip("从当前存档提取可扫描的数值")
         b.clicked.connect(self._mem_extract_targets)
+        self._mem_ui_extract_btn = b
         brow.addWidget(b)
         b_sel = QPushButton("全选"); b_sel.setObjectName("Ghost")
         b_sel.clicked.connect(lambda: self._mem_check_all(True))
         brow.addWidget(b_sel)
-        b_un = QPushButton("全不选"); b_un.setObjectName("Ghost")
+        b_un = QPushButton("取消全选"); b_un.setObjectName("Ghost")
         b_un.clicked.connect(lambda: self._mem_check_all(False))
         brow.addWidget(b_un)
         brow.addStretch(1)
-        lay.addLayout(brow)
+        self._mem_ui_check_buttons = (b_sel, b_un)
+        targets_layout.addLayout(brow)
 
         # 4) 目标表格
         self.mem_target_table = QTableWidget(0, 4)
-        self.mem_target_table.setHorizontalHeaderLabels(["☑", "字段", "存档值", "类型"])
+        self.mem_target_table.setHorizontalHeaderLabels(["选", "字段", "扫描值", "类型"])
+        self.mem_target_table.setToolTip("勾选需要扫描的字段；双击扫描值可修改")
         hh = self.mem_target_table.horizontalHeader()
         hh.setSectionResizeMode(1, QHeaderView.Stretch)
         hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.mem_target_table.setMaximumHeight(190)
-        lay.addWidget(self.mem_target_table)
+        hh.setMinimumSectionSize(32)
+        self.mem_target_table.setColumnWidth(2, 90)
+        self.mem_target_table.setColumnWidth(3, 66)
+        self.mem_target_table.setColumnHidden(3, True)
+        self.mem_target_table.setMinimumWidth(0)
+        self.mem_target_table.setMinimumHeight(90)
+        self.mem_target_table.verticalHeader().setDefaultSectionSize(32)
+        self.mem_target_table.setAlternatingRowColors(True)
+        self.mem_target_table.verticalHeader().setVisible(False)
+        targets_layout.addWidget(self.mem_target_table, 1)
+        target_help = QLabel("双击修改扫描值，悬停查看类型。")
+        target_help.setObjectName("Muted")
+        target_help.setWordWrap(True)
+        targets_layout.addWidget(target_help)
+        target_actions = QHBoxLayout()
+        target_actions.setSpacing(6)
+        results_panel = QFrame()
+        results_panel.setObjectName("ToolPanel")
+        results_panel.setMinimumWidth(345)
+        results_layout = QVBoxLayout(results_panel)
+        results_layout.setContentsMargins(10, 10, 10, 10)
+        results_layout.setSpacing(8)
+        results_header = QHBoxLayout()
+        title = QLabel("2 · 候选地址")
+        title.setObjectName("PanelTitle")
+        results_header.addWidget(title)
+        results_header.addStretch(1)
+        self._mem_ui_result_count = QLabel("0 个候选")
+        self._mem_ui_result_count.setObjectName("StatusChip")
+        results_header.addWidget(self._mem_ui_result_count)
+        results_layout.addLayout(results_header)
+        self._mem_ui_result_search = QLineEdit()
+        self._mem_ui_result_search.setPlaceholderText("查找字段或地址…")
+        self._mem_ui_result_search.setClearButtonEnabled(True)
+        results_layout.addWidget(self._mem_ui_result_search)
 
         # 5) 扫描操作（拆两行：扫描执行 | 结果处理，避免按钮挤压）
-        act = QHBoxLayout(); act.setSpacing(8)
-        b_scan = QPushButton("🚀 开始扫描")
+        act = QHBoxLayout(); act.setSpacing(6)
+        b_scan = QPushButton("首次扫描")
         b_scan.clicked.connect(self._mem_start_scan)
-        act.addWidget(b_scan)
-        b_scan2 = QPushButton("🔎 下一次扫描(只保留已变化)")
+        self._mem_scan_btn = b_scan
+        target_actions.addWidget(b_scan, 1)
+        self._mem_refine_mode = QComboBox()
+        self._mem_refine_mode.addItem("值已变化", "changed")
+        self._mem_refine_mode.addItem("值未变化", "unchanged")
+        self._mem_refine_mode.addItem("等于目标值", "exact")
+        self._mem_refine_mode.setToolTip("选择下一次扫描保留候选的条件")
+        act.addWidget(self._mem_refine_mode)
+        b_scan2 = QPushButton("筛选候选")
+        b_scan2.setObjectName("Secondary")
         b_scan2.clicked.connect(self._mem_scan_again)
+        self._mem_refine_btn = b_scan2
         act.addWidget(b_scan2)
-        self._mem_fold_btn = QPushButton("👁 展开候选"); self._mem_fold_btn.setObjectName("Ghost")
+        b_cancel = QPushButton("停止")
+        b_cancel.setObjectName("Ghost")
+        b_cancel.setEnabled(False)
+        b_cancel.clicked.connect(self._mem_cancel_scan)
+        self._mem_cancel_btn = b_cancel
+        target_actions.addWidget(b_cancel)
+        targets_layout.addLayout(target_actions)
+        self._mem_fold_btn = QPushButton("展开"); self._mem_fold_btn.setObjectName("Ghost")
         self._mem_fold_btn.setCheckable(True)
         self._mem_fold_btn.clicked.connect(self._mem_toggle_fold)
         act.addWidget(self._mem_fold_btn)
         act.addStretch(1)
-        lay.addLayout(act)
-        act2 = QHBoxLayout(); act2.setSpacing(8)
-        b_ref = QPushButton("🔁 重读选中地址"); b_ref.setObjectName("Ghost")
+        results_layout.addLayout(act)
+        act2 = QHBoxLayout(); act2.setSpacing(6)
+        b_ref = QPushButton("刷新数值"); b_ref.setObjectName("Ghost")
+        b_ref.setToolTip("刷新勾选地址；未勾选时刷新已显示的地址")
         b_ref.clicked.connect(self._mem_reread)
+        self._mem_reread_btn = b_ref
         act2.addWidget(b_ref)
-        b_write = QPushButton("✍ 写入全部选中地址"); b_write.setObjectName("Ghost")
+        b_write = QPushButton("写入选中")
         b_write.clicked.connect(self._mem_write_selected)
-        act2.addWidget(b_write)
-        b_clear = QPushButton("🗑 清空结果"); b_clear.setObjectName("Ghost")
+        self._mem_write_btn = b_write
+        b_clear = QPushButton("清空"); b_clear.setObjectName("Ghost")
         b_clear.clicked.connect(self._mem_clear)
+        self._mem_ui_clear_btn = b_clear
         act2.addWidget(b_clear)
-        b_sync = QPushButton("🔁 自动同步10s：开")
+        b_sync = QPushButton("自动刷新 · 关")
         b_sync.setObjectName("Ghost")
         b_sync.setCheckable(True)
-        b_sync.setChecked(True)
+        b_sync.setChecked(False)
         b_sync.clicked.connect(self._mem_toggle_sync)
         act2.addWidget(b_sync)
         self._mem_sync_btn = b_sync
-        b_sync.hide()                                        # 仅隐藏按钮，不影响同步功能
         self._mem_sync_timer = QTimer(self)
         self._mem_sync_timer.setInterval(10000)                # 每 10s 同步一次
         self._mem_sync_timer.timeout.connect(self._mem_sync_once)
-        self._mem_sync_timer.start()
         act2.addStretch(1)
-        lay.addLayout(act2)
+        results_layout.addLayout(act2)
 
         # 6) 结果树（按字段分组，子列表显示详细地址，默认不展开避免卡死）
         self.mem_result_table = QTreeWidget()
+        self.mem_result_table.setObjectName("MemoryResults")
         self.mem_result_table.setColumnCount(4)
-        self.mem_result_table.setHeaderLabels(["☑", "字段 / 地址", "当前值", "目标值(双击改)"])
+        self.mem_result_table.setHeaderLabels(["选", "字段 / 地址", "当前值", "写入值"])
+        self.mem_result_table.setMinimumWidth(0)
+        self.mem_result_table.setMinimumHeight(100)
+        self.mem_result_table.setIndentation(12)
         self.mem_result_table.setUniformRowHeights(True)
+        self.mem_result_table.setAlternatingRowColors(True)
         hh2 = self.mem_result_table.header()
         hh2.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        hh2.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        hh2.setSectionResizeMode(3, QHeaderView.Stretch)
+        hh2.setMinimumSectionSize(32)
+        hh2.setStretchLastSection(False)
+        self.mem_result_table.setColumnWidth(2, 92)
+        self.mem_result_table.setColumnWidth(3, 92)
         hh2.setSectionResizeMode(1, QHeaderView.Stretch)
-        lay.addWidget(self.mem_result_table, 1)
+        self._mem_ui_result_stack = QStackedWidget()
+        self._mem_ui_result_stack.setObjectName("PanelBody")
+        empty = QWidget()
+        empty.setObjectName("PanelBody")
+        empty_layout = QVBoxLayout(empty)
+        empty_layout.setContentsMargins(14, 14, 14, 14)
+        empty_layout.addStretch(1)
+        empty_title = QLabel("等待首次扫描")
+        self._mem_ui_empty_title = empty_title
+        empty_title.setObjectName("EmptyTitle")
+        empty_title.setAlignment(Qt.AlignCenter)
+        empty_layout.addWidget(empty_title)
+        empty_detail = QLabel("提取并勾选左侧目标，然后开始扫描。\n候选地址将在这里按字段分组显示。")
+        self._mem_ui_empty_detail = empty_detail
+        empty_detail.setObjectName("Muted")
+        empty_detail.setWordWrap(True)
+        empty_detail.setAlignment(Qt.AlignCenter)
+        empty_layout.addWidget(empty_detail)
+        empty_layout.addStretch(1)
+        self._mem_ui_result_stack.addWidget(empty)
+        self._mem_ui_result_stack.addWidget(self.mem_result_table)
+        results_layout.addWidget(self._mem_ui_result_stack, 1)
+        write_bar = QHBoxLayout()
+        self._mem_ui_selection_lbl = QLabel("未勾选地址")
+        self._mem_ui_selection_lbl.setObjectName("Muted")
+        write_bar.addWidget(self._mem_ui_selection_lbl, 1)
+        write_bar.addWidget(b_write)
+        results_layout.addLayout(write_bar)
+        result_help = QLabel("双击写入值编辑，仅写入勾选的地址。")
+        result_help.setObjectName("Muted")
+        result_help.setWordWrap(True)
+        results_layout.addWidget(result_help)
+        self._mem_ui_splitter.addWidget(targets_panel)
+        self._mem_ui_splitter.addWidget(results_panel)
+        self._mem_ui_splitter.setStretchFactor(0, 2)
+        self._mem_ui_splitter.setStretchFactor(1, 3)
+        self._mem_ui_splitter.setSizes([310, 520])
+        lay.addWidget(self._mem_ui_splitter, 1)
 
-        hint = QLabel("💡 先选存档→从存档提取目标→开始扫描定位真实内存地址；"
-                      "在【目标值】列双击输入新数值，点【写入全部选中地址】即刻修改内存（不写存档）。")
-        hint.setObjectName("Hint"); hint.setWordWrap(True)
-        lay.addWidget(hint)
+        footer = QHBoxLayout()
+        self._mem_progress = QProgressBar()
+        self._mem_progress.setRange(0, 100)
+        self._mem_progress.setValue(0)
+        self._mem_progress.setTextVisible(False)
+        self._mem_progress.setMaximumWidth(180)
+        self._mem_progress.hide()
+        footer.addWidget(self._mem_progress)
+        self._mem_state_lbl = QLabel("先提取目标，再进行首次扫描")
+        self._mem_state_lbl.setObjectName("Muted")
+        self._mem_state_lbl.setWordWrap(True)
+        footer.addWidget(self._mem_state_lbl, 1)
+        lay.addLayout(footer)
+        self._mem_ui_update_timer = QTimer(self)
+        self._mem_ui_update_timer.setSingleShot(True)
+        self._mem_ui_update_timer.timeout.connect(self._mem_ui_sync)
+        for model in (self.mem_target_table.model(), self.mem_result_table.model()):
+            model.rowsInserted.connect(self._mem_ui_schedule)
+            model.rowsRemoved.connect(self._mem_ui_schedule)
+            model.modelReset.connect(self._mem_ui_schedule)
+            model.dataChanged.connect(self._mem_ui_schedule)
+        self._mem_ui_target_search.textChanged.connect(self._mem_ui_sync)
+        self._mem_ui_result_search.textChanged.connect(self._mem_ui_sync)
+        self._mem_fold_btn.clicked.connect(self._mem_ui_sync)
+        self._mem_sync_btn.clicked.connect(self._mem_ui_sync)
+        self._mem_ui_state_timer = QTimer(self)
+        self._mem_ui_state_timer.setInterval(400)
+        self._mem_ui_state_timer.timeout.connect(self._mem_ui_poll_state)
+        self._mem_ui_state_timer.start()
+        self._mem_ui_last_state = None
+        self._mem_ui_sync()
 
         QTimer.singleShot(0, self._mem_refresh_process)
 
+    def _mem_ui_schedule(self, *_):
+        if not self._mem_ui_update_timer.isActive():
+            self._mem_ui_update_timer.start(0)
+
+    def _mem_ui_poll_state(self):
+        if not self.tab_memory.isVisible():
+            return
+        state = (self._mem_busy, self._mem_scanner is not None, bool(self.data))
+        if state != self._mem_ui_last_state:
+            self._mem_ui_sync()
+
+    def _mem_ui_sync(self, *_):
+        """Synchronize presentation only; never read process memory here."""
+        busy = self._mem_busy
+        connected = self._mem_scanner is not None
+        self._mem_ui_last_state = (busy, connected, bool(self.data))
+        target_query = self._mem_ui_target_search.text().strip().casefold()
+        target_count = self.mem_target_table.rowCount()
+        selected_targets = 0
+        for row in range(target_count):
+            name = self.mem_target_table.item(row, 1)
+            checked = self.mem_target_table.item(row, 0)
+            value = self.mem_target_table.item(row, 2)
+            value_type = self.mem_target_table.item(row, 3)
+            if value is not None and value_type is not None:
+                tip = f"类型：{value_type.text()} · 双击修改扫描值"
+                if value.toolTip() != tip:
+                    value.setToolTip(tip)
+                alignment = Qt.AlignRight | Qt.AlignVCenter
+                if value.textAlignment() != alignment:
+                    value.setTextAlignment(alignment)
+            if checked is not None and checked.checkState() == Qt.Checked:
+                selected_targets += 1
+            self.mem_target_table.setRowHidden(row, bool(target_query and
+                (name is None or target_query not in name.text().casefold())))
+        self._mem_ui_target_count.setText(f"{selected_targets} / {target_count} 项")
+        self._mem_ui_target_count.setToolTip("已勾选 / 全部扫描目标")
+        query = self._mem_ui_result_search.text().strip().casefold()
+        group_count = self.mem_result_table.topLevelItemCount()
+        selected = 0
+        visible_groups = 0
+        for index in range(group_count):
+            group = self.mem_result_table.topLevelItem(index)
+            group_matches = query in group.text(1).casefold()
+            visible_children = 0
+            for row in range(group.childCount()):
+                child = group.child(row)
+                matches = not query or group_matches or query in child.text(1).casefold()
+                child.setHidden(not matches)
+                visible_children += int(matches)
+                selected += int(child.checkState(0) == Qt.Checked)
+            group.setHidden(bool(query and not visible_children))
+            visible_groups += int(not group.isHidden())
+            if query and visible_children:
+                group.setExpanded(True)
+        total = sum(len(addresses) for addresses in self._mem_hits.values()
+                    if isinstance(addresses, list))
+        self._mem_ui_result_count.setText(f"{total:,} 个候选")
+        self._mem_ui_result_stack.setCurrentIndex(1 if visible_groups else 0)
+        if query and group_count and not visible_groups:
+            self._mem_ui_empty_title.setText("没有匹配的候选")
+            self._mem_ui_empty_detail.setText("尝试字段名称或十六进制地址，或清空搜索。")
+        elif busy and not group_count:
+            self._mem_ui_empty_title.setText("正在扫描…")
+            self._mem_ui_empty_detail.setText("扫描完成后，候选地址将在这里显示。")
+        else:
+            self._mem_ui_empty_title.setText("暂无候选地址")
+            self._mem_ui_empty_detail.setText("提取并勾选左侧目标，然后开始扫描。\n候选地址将在这里按字段分组显示。")
+        self._mem_ui_selection_lbl.setText(f"已勾选 {selected} 个地址" if selected else "未勾选地址")
+        self._mem_ui_selection_lbl.setToolTip("包含搜索筛选后隐藏的已勾选地址")
+        self._mem_scan_btn.setEnabled(not busy and connected and selected_targets > 0)
+        self._mem_refine_btn.setEnabled(not busy and connected and total > 0)
+        self._mem_write_btn.setEnabled(not busy and connected and selected > 0)
+        self._mem_reread_btn.setEnabled(not busy and connected and group_count > 0)
+        self._mem_refine_mode.setEnabled(not busy and total > 0)
+        self._mem_ui_clear_btn.setEnabled(not busy and group_count > 0)
+        self._mem_fold_btn.setEnabled(not busy and group_count > 0)
+        self._mem_cancel_btn.setEnabled(busy)
+        self._mem_refresh_btn.setEnabled(not busy)
+        self._mem_ui_extract_btn.setEnabled(not busy and isinstance(self.data, dict) and bool(self.data))
+        self._mem_ui_choose_btn.setEnabled(not busy)
+        self._mem_sync_btn.setEnabled(not busy and group_count > 0)
+        self._mem_sync_btn.setText("自动刷新 · 10 秒" if self._mem_sync_btn.isChecked() else "自动刷新 · 关")
+        self._mem_fold_btn.setText("收起" if self._mem_fold_btn.isChecked() else "展开")
+        for button in self._mem_ui_check_buttons:
+            button.setEnabled(not busy and target_count > 0)
+        for widget in (self._mem_ui_target_search, self._mem_ui_result_search,
+                       self.mem_target_table, self.mem_result_table):
+            widget.setEnabled(not busy)
+
     # ---------- 内存：后端逻辑 ----------
     def _mem_refresh_process(self):
+        if self._mem_busy:
+            return
         pid, exe = find_game_process()
         if not pid:
             self.mem_proc_lbl.setText("❌ 未检测到游戏进程（请先启动游戏）")
+            if self._mem_scanner is not None:
+                self._mem_scanner.close()
+                self._mem_scanner = None
+            self._mem_clear()
             return
         try:
             if self._mem_scanner is None or self._mem_scanner.pid != pid:
@@ -1145,6 +2232,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
                     except Exception:
                         pass
                 self._mem_scanner = MemScanner(pid)
+                self._mem_clear()
             self.mem_proc_lbl.setText(f"✅ 已绑定游戏: {exe}  (PID {pid})")
             self.log(f"🔬 已绑定游戏进程 {exe} (PID {pid})")
         except Exception as e:
@@ -1199,6 +2287,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
             QMessageBox.warning(self, "未加载存档", "请先打开/选择存档！")
             return
         tgts = self._collect_save_targets()
+        self._mem_clear()
         self._mem_targets = tgts
         self.mem_target_table.setRowCount(0)
         for nm, v, vt in tgts:
@@ -1212,6 +2301,9 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
             self.mem_target_table.setItem(r, 1, QTableWidgetItem(nm))
             self.mem_target_table.setItem(r, 2, QTableWidgetItem(str(v)))
             self.mem_target_table.setItem(r, 3, QTableWidgetItem(vt))
+            for column in (1, 3):
+                item = self.mem_target_table.item(r, column)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         self._mem_sync_save_label()
         self.log(f"📥 已从存档提取 {len(tgts)} 个扫描目标")
 
@@ -1234,11 +2326,56 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
                 continue
             nm = self.mem_target_table.item(r, 1).text()
             vt = self.mem_target_table.item(r, 3).text()
-            for tn, tv, _ in self._mem_targets:
-                if tn == nm:
-                    out.append((nm, tv, vt))
-                    break
+            raw = self.mem_target_table.item(r, 2).text().strip()
+            try:
+                value = self._mem_parse_value(raw, vt)
+            except ValueError as exc:
+                raise ValueError(f"{nm}: {exc}") from exc
+            out.append((nm, value, vt))
         return out
+
+    @staticmethod
+    def _mem_parse_value(text, value_type):
+        if not text:
+            raise ValueError("数值不能为空")
+        try:
+            number_value = float(text)
+        except ValueError as exc:
+            raise ValueError("请输入有效数字") from exc
+        if not math.isfinite(number_value):
+            raise ValueError("数值必须为有限值")
+        if value_type == "int32":
+            if not number_value.is_integer():
+                raise ValueError("整数类型不能包含小数")
+            value = int(number_value)
+            if not -2147483648 <= value <= 2147483647:
+                raise ValueError("超出 int32 范围")
+            return value
+        if abs(number_value) > 3.4028235e38:
+            raise ValueError("超出 float32 范围")
+        return number_value
+
+    def _mem_set_busy(self, busy, message=None):
+        self._mem_busy = busy
+        for widget in (self._mem_refresh_btn, self._mem_scan_btn,
+                       self._mem_refine_btn, self._mem_write_btn,
+                       self._mem_reread_btn, self._mem_refine_mode):
+            widget.setEnabled(not busy)
+        self._mem_cancel_btn.setEnabled(busy)
+        self._mem_progress.setVisible(busy)
+        if not busy:
+            self._mem_progress.setValue(0)
+        if message:
+            self._mem_state_lbl.setText(message)
+        self._mem_ui_sync()
+
+    def _mem_cancel_scan(self):
+        worker = self._mem_worker
+        if worker is not None and worker.isRunning():
+            cancel = getattr(worker, "cancel", None)
+            if cancel:
+                cancel()
+            self._mem_state_lbl.setText("正在停止扫描…")
 
     def _mem_start_scan(self):
         if 1 != 1:
@@ -1247,16 +2384,25 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         if self._mem_scanner is None:
             QMessageBox.warning(self, "未绑定进程", "请先点【检测进程】绑定游戏！")
             return
-        tgts = self._mem_checked_targets()
+        if self._mem_busy:
+            return
+        try:
+            tgts = self._mem_checked_targets()
+        except ValueError as exc:
+            QMessageBox.warning(self, "目标值无效", str(exc))
+            return
         if not tgts:
             QMessageBox.warning(self, "没有目标",
                                 "请先【从存档提取扫描目标】并勾选至少一项！")
             return
         self.status_lbl.setText("🚀 正在扫描…（约需 1 分钟，请勿点击）")
+        self._mem_set_busy(True, "正在扫描游戏内存…")
+        self._mem_active_targets = list(tgts)
         self.log(f"🚀 开始内存首扫，共 {len(tgts)} 个目标")
         self._mem_worker = _MemScanWorker(self._mem_scanner, tgts, None, workers=4)
         self._mem_worker.finished_ok.connect(self._mem_on_scan_done)
         self._mem_worker.failed.connect(self._mem_on_scan_fail)
+        self._mem_worker.finished.connect(self._mem_worker_finished)
         self._mem_worker.start()
         # 轮询扫描进度，让用户看到实时推进而不是"一直没反应"
         self._mem_progress_timer = QTimer(self)
@@ -1271,6 +2417,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         if total <= 0:
             return
         pct = min(100.0, scanned * 100.0 / total)
+        self._mem_progress.setValue(round(pct))
         sm = scanned / (1024 * 1024)
         tm = total / (1024 * 1024)
         self.status_lbl.setText(
@@ -1280,15 +2427,24 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         self._mem_stop_progress()
         el = res.pop("_elapsed", 0)
         self._mem_hits = dict(res)
+        self._mem_prev = {}
         total = sum(len(v) for v in res.values() if isinstance(v, list))
         self.log(f"✅ 首扫完成 {el:.1f}s，共 {total} 个候选地址")
         self.status_lbl.setText(f"✅ 扫描完成：{total} 个候选地址，耗时 {el:.1f}s")
+        self._mem_set_busy(False, f"扫描完成：{total} 个候选，耗时 {el:.1f} 秒")
         self._mem_render_results()
 
     def _mem_on_scan_fail(self, msg):
         self._mem_stop_progress()
-        self.status_lbl.setText(f"❌ 扫描失败: {msg}")
-        self.log(f"❌ 扫描失败: {msg}")
+        cancelled = "取消" in msg
+        text = "扫描已停止" if cancelled else f"扫描失败: {msg}"
+        self._mem_set_busy(False, text)
+        self.status_lbl.setText(text)
+        self.log(text)
+
+    def _mem_worker_finished(self):
+        if self._mem_busy and self._mem_worker is not None and not self._mem_worker.isRunning():
+            self._mem_set_busy(False)
 
     def _mem_stop_progress(self):
         t = getattr(self, "_mem_progress_timer", None)
@@ -1305,8 +2461,19 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         CAP = 400                      # 每字段最多列出的候选地址
         if self._mem_prev is None:
             self._mem_prev = {}        # 首扫时建基准快照；后续 render 不再覆盖
-        tv_map = {n: v for n, v, _ in self._mem_targets}
-        vt_map = {n: vt for n, _, vt in self._mem_targets}
+        tv_map, vt_map = {}, {}
+        for row in range(self.mem_target_table.rowCount()):
+            name_item = self.mem_target_table.item(row, 1)
+            value_item = self.mem_target_table.item(row, 2)
+            type_item = self.mem_target_table.item(row, 3)
+            if not (name_item and value_item and type_item):
+                continue
+            name, value_type = name_item.text(), type_item.text()
+            vt_map[name] = value_type
+            try:
+                tv_map[name] = self._mem_parse_value(value_item.text(), value_type)
+            except ValueError:
+                pass
         self.mem_result_table.clear()
         self._mem_rows = []            # (叶子 item, nm, addr, vt)
         for nm, addrs in self._mem_hits.items():
@@ -1322,24 +2489,19 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
                 cand.append((addr, cur))
             if not cand:
                 continue
-            best = None
-            if tv is not None:
-                def _dist(c):
-                    return float("inf") if c is None else abs(float(c) - float(tv))
-                best = min(range(len(cand)), key=lambda i: _dist(cand[i][1]))
             # 顶层字段节点：列1显示字段名，并在其后显示总数据量
-            top = QTreeWidgetItem([str(len(cand)), f"{nm}（共 {len(cand)} 个）", "", ""])
+            visible_note = f"，显示前 {len(cand)} 个" if len(addrs) > CAP else ""
+            top = QTreeWidgetItem(["", f"{nm}（共 {len(addrs)} 个{visible_note}）", "", ""])
             tf = top.font(1); tf.setBold(True)
             top.setFont(1, tf)
             top.setSizeHint(0, QSize(28, 32))   # 字段节点行高
             for ai, (addr, cur) in enumerate(cand):
-                is_best = (ai == best)
                 leaf = QTreeWidgetItem()
                 leaf.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                leaf.setCheckState(0, Qt.Checked if is_best else Qt.Unchecked)
+                leaf.setCheckState(0, Qt.Unchecked)
                 leaf.setText(1, hex(addr))
                 leaf.setText(2, "" if cur is None else self._mem_fmt(cur))
-                leaf.setText(3, "")
+                leaf.setText(3, "" if tv is None else self._mem_fmt(tv))
                 leaf.setFlags(leaf.flags() | Qt.ItemIsEditable)
                 leaf.setToolTip(3, "双击输入新值")
                 leaf.setSizeHint(0, QSize(28, 34))          # 行加高 → 编辑框更大
@@ -1349,7 +2511,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
                 self._mem_rows.append((leaf, nm, addr, vt))
             self.mem_result_table.addTopLevelItem(top)
             top.setExpanded(False)     # 默认折叠
-            top.setToolTip(1, f"{nm}：共 {len(cand)} 个候选地址，点击展开查看")
+            top.setToolTip(1, f"{nm}：共 {len(addrs)} 个候选地址，点击展开查看")
 
     def _mem_toggle_fold(self):
         """展开/收起所有字段节点：展开显示全部地址明细；收起仅显示字段+总数据量。"""
@@ -1360,7 +2522,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
 
     def _mem_toggle_sync(self, checked):
         """开关每 10s 自动同步。"""
-        self._mem_sync_btn.setText("🔁 自动同步10s：开" if checked else "🔁 自动同步10s：关")
+        self._mem_sync_btn.setText("自动刷新：已开启" if checked else "自动刷新 10 秒")
         if checked:
             self._mem_sync_timer.start()
         else:
@@ -1368,7 +2530,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
 
     def _mem_sync_once(self):
         """每 10s：重读已列候选地址的当前值，只刷新『值发生变化』的叶子行（增量同步）。"""
-        if not self._mem_rows:
+        if not self._mem_rows or self._mem_busy:
             return
         changes = 0
         for leaf, nm, addr, vt in self._mem_rows:
@@ -1394,16 +2556,21 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         return str(v)
 
     def _mem_reread(self):
-        for leaf, nm, addr, vt in self._mem_rows:
+        rows = [row for row in self._mem_rows if row[0].checkState(0) == Qt.Checked]
+        if not rows:
+            rows = self._mem_rows
+        for leaf, nm, addr, vt in rows:
             cur = self._mem_safe_read(addr, vt)
             leaf.setText(2, "" if cur is None else self._mem_fmt(cur))
-        self.log("🔁 已重读当前内存值")
+        self.log(f"🔁 已重读 {len(rows)} 个内存值")
 
     def _mem_clear(self):
         self.mem_result_table.clear()
         self._mem_rows = []
         self._mem_hits = {}
         self._mem_prev = None
+        if hasattr(self, "_mem_state_lbl"):
+            self._mem_state_lbl.setText("尚无扫描结果")
 
     def _mem_write_selected(self):
         if 1 != 1:
@@ -1419,23 +2586,42 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         if not rows:
             QMessageBox.information(
                 self, "未勾选",
-                "请在结果树【☑】列勾选要写入的地址行\n（默认已勾选每字段最接近目标值的一条）。")
+                "请在结果树【☑】列勾选要写入的地址行。\n目标值可在最后一列直接编辑。")
             return
-        n = 0
+        pending = []
         for leaf, nm, addr, vt in rows:
             txt = leaf.text(3).strip()
             if not txt:
-                continue
+                QMessageBox.warning(self, "目标值为空", f"{nm} / {hex(addr)} 尚未填写目标值。")
+                return
             try:
-                val = int(float(txt)) if vt == "int32" else float(txt)
-            except ValueError:
-                continue
-            if self._mem_scanner.write_value(addr, vt, val):
-                leaf.setText(2, self._mem_fmt(self._mem_safe_read(addr, vt)))
-                n += 1
-        self.log(f"✍ 已写入 {n} 个地址")
+                val = self._mem_parse_value(txt, vt)
+            except ValueError as exc:
+                QMessageBox.warning(self, "目标值无效", f"{nm} / {hex(addr)}：{exc}")
+                return
+            pending.append((leaf, nm, addr, vt, val))
+        written, failed = 0, []
+        for leaf, nm, addr, vt, val in pending:
+            try:
+                ok = self._mem_scanner.write_value(addr, vt, val)
+                current = self._mem_safe_read(addr, vt) if ok else None
+                verified = current is not None and (
+                    current == val if vt == "int32" else math.isclose(current, val, rel_tol=1e-5, abs_tol=1e-5))
+                if verified:
+                    leaf.setText(2, self._mem_fmt(current))
+                    self._mem_prev[addr] = current
+                    written += 1
+                else:
+                    failed.append(hex(addr))
+            except (OSError, OverflowError, ValueError) as exc:
+                failed.append(f"{hex(addr)} ({exc})")
+        self.log(f"✍ 已写入并验证 {written} 个地址，失败 {len(failed)} 个")
         tip = "修改后可能需要执行一次对应值的操作（如消费）才可在游戏内生效。"
-        self.status_lbl.setText(f"已写入 {n} 个地址：{tip}")
+        state = f"已写入并验证 {written} 个地址"
+        if failed:
+            state += f"，失败 {len(failed)} 个"
+        self._mem_state_lbl.setText(state)
+        self.status_lbl.setText(f"{state}：{tip}")
 
     def _mem_scan_again(self):
         if 1 != 1:
@@ -1454,11 +2640,23 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
                 "请先点【开始扫描】得到候选地址；\n"
                 "然后在游戏里让该值发生变化（如开始新的一天），再进行下一次扫描。")
             return
-        prev = self._mem_prev or {}
-        vt_map = {n: vt for n, _, vt in self._mem_targets}
+        type_map = {n: vt for n, _, vt in getattr(self, "_mem_active_targets", self._mem_targets)}
+        target_map = {n: v for n, v, _ in getattr(self, "_mem_active_targets", self._mem_targets)}
+        self._mem_set_busy(True, "正在筛选全部候选地址…")
+        worker = _MemRefineWorker(
+            sc, self._mem_hits, type_map, self._mem_prev,
+            target_map, self._mem_refine_mode.currentData())
+        self._mem_worker = worker
+        worker.finished_ok.connect(self._mem_on_refine_done)
+        worker.failed.connect(self._mem_on_scan_fail)
+        worker.finished.connect(self._mem_worker_finished)
+        worker.start()
+        return
+
         new = {}
         kept = dropped = 0
         converged = 0                       # 已收敛到唯一地址、本次自动保留的字段数
+        mode = self._mem_refine_mode.currentData()
         for nm, addrs in self._mem_hits.items():
             # 一旦该字段已收敛到只剩 1 个地址，下次扫描直接跳过过滤、原样保留，
             # 防止它被误删/误收敛导致字段整个消失。
@@ -1468,13 +2666,24 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
                 continue
             vt = vt_map.get(nm, "int32")
             keep = []
-            for addr in addrs[:400]:
+            for addr in addrs:
                 cur = self._mem_safe_read(addr, vt)
                 if cur is None:
                     dropped += 1
                     continue
                 last = prev.get(addr)
-                if last is not None and float(cur) != float(last):
+                target = None
+                for tn, tv, _ in getattr(self, "_mem_active_targets", self._mem_targets):
+                    if tn == nm:
+                        target = tv
+                        break
+                if mode == "unchanged":
+                    matches = last is not None and cur == last
+                elif mode == "exact":
+                    matches = target is not None and cur == target
+                else:
+                    matches = last is not None and cur != last
+                if matches:
                     keep.append(addr)
                     kept += 1
                 else:
@@ -1522,6 +2731,18 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
                 "若每字段仍 >1 个，请再次在游戏里触发变化并点【下一次扫描】；"
                 "直到每字段只剩 1 个即为目标地址。")
         self.log(f"🔎 下一次扫描：剔除 {dropped}，保留 {total}（{per}），已收敛 {converged}")
+
+    def _mem_on_refine_done(self, hits, snapshot, kept, dropped, elapsed):
+        self._mem_hits = hits
+        self._mem_prev = snapshot
+        self._mem_set_busy(False, f"筛选完成：保留 {kept} 个，移除 {dropped} 个")
+        self._mem_render_results()
+        if not hits:
+            self.status_lbl.setText("❌ 没有符合条件的候选地址，请让游戏数值变化后再筛选。")
+            return
+        total = sum(len(values) for values in hits.values())
+        self.status_lbl.setText(f"✅ 筛选完成：保留 {total} 个候选，耗时 {elapsed:.1f} 秒")
+        self.log(f"🔎 下一次扫描：保留 {kept}，移除 {dropped}，耗时 {elapsed:.1f}s")
 
     # ---------- 银行还款 / 剧情解锁 / 教程解锁（表格 + 一键操作） ----------
     def build_debt_story_tutorial_tabs(self):
@@ -1713,6 +2934,452 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         h.setObjectName("Hint")
         lay.addWidget(h)
 
+    def build_map3d_tab(self):
+        """真实 Unity 场景几何与存档对象叠加预览。"""
+        self.tab_map3d.setObjectName("MapPage")
+        lay = QVBoxLayout(self.tab_map3d)
+        lay.setContentsMargins(PAGE_MARGIN, 12, PAGE_MARGIN, 10)
+        lay.setSpacing(10)
+        title_bar = QHBoxLayout()
+        title = QLabel("游戏地图")
+        title.setObjectName("PageTitle")
+        title_bar.addWidget(title)
+        subtitle = QLabel("放置、移动和旋转物品")
+        subtitle.setObjectName("Muted")
+        title_bar.addWidget(subtitle, 1)
+        self.map_options_btn = QToolButton()
+        self.map_options_btn.setText("地图设置")
+        self.map_options_btn.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(self.map_options_btn)
+        menu.addAction("刷新存档坐标", self.refresh_map3d)
+        menu.addAction("重新加载游戏场景", self.load_game_scene)
+        menu.addSeparator()
+        menu.addAction("选择游戏目录…", self.choose_game_directory)
+        self.map_options_btn.setMenu(menu)
+        title_bar.addWidget(self.map_options_btn)
+        lay.addLayout(title_bar)
+
+        tools = QFrame()
+        tools.setObjectName("ToolPanel")
+        tools_layout = QVBoxLayout(tools)
+        tools_layout.setContentsMargins(12, 10, 12, 10)
+        tools_layout.setSpacing(8)
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
+        view_label = QLabel("视图")
+        view_label.setObjectName("PanelTitle")
+        bar.addWidget(view_label)
+        self.map_view_box = QComboBox()
+        self.map_view_box.addItem("存档区域", "save")
+        self.map_view_box.addItem("完整场景", "all")
+        self.map_view_box.setToolTip("选择地图显示范围")
+        self.map_view_box.currentIndexChanged.connect(
+            lambda: self.map3d_view.set_view_mode(self.map_view_box.currentData()))
+        bar.addWidget(self.map_view_box)
+        self.map_camera_box = QComboBox()
+        self.map_camera_box.addItem("俯视", "top")
+        self.map_camera_box.addItem("斜视", "angle")
+        self.map_camera_box.setToolTip("切换相机角度")
+        self.map_camera_box.currentIndexChanged.connect(
+            lambda: self.map3d_view.set_camera_preset(self.map_camera_box.currentData()))
+        bar.addWidget(self.map_camera_box)
+        bar.addSpacing(6)
+        floor_title = QLabel("楼层")
+        floor_title.setObjectName("PanelTitle")
+        bar.addWidget(floor_title)
+        self.map_floor_box = QComboBox()
+        self.map_floor_box.addItem("存档楼层", "current")
+        self.map_floor_box.addItem("上一层", "upper")
+        self.map_floor_box.addItem("全部楼层", "all")
+        self.map_floor_box.currentIndexChanged.connect(self._select_map_floor)
+        bar.addWidget(self.map_floor_box)
+        self.map_floor_prev = QPushButton("↓")
+        self.map_floor_prev.setObjectName("Secondary")
+        self.map_floor_prev.setFixedWidth(34)
+        self.map_floor_prev.setEnabled(False)
+        self.map_floor_prev.setAccessibleName("降低一层")
+        self.map_floor_prev.setToolTip("降低一层（方向键 ↓）")
+        self.map_floor_prev.clicked.connect(lambda: self.map3d_view.step_floor(-1))
+        bar.addWidget(self.map_floor_prev)
+        self.map_floor_label = QLabel("未载入")
+        self.map_floor_label.setObjectName("Muted")
+        self.map_floor_label.hide()
+        self.map_floor_next = QPushButton("↑")
+        self.map_floor_next.setObjectName("Secondary")
+        self.map_floor_next.setFixedWidth(34)
+        self.map_floor_next.setEnabled(False)
+        self.map_floor_next.setAccessibleName("升高一层")
+        self.map_floor_next.setToolTip("升高一层（方向键 ↑）")
+        self.map_floor_next.clicked.connect(lambda: self.map3d_view.step_floor(1))
+        bar.addWidget(self.map_floor_next)
+        bar.addStretch(1)
+        self.map_reset_btn = QPushButton("重置视角")
+        self.map_reset_btn.setObjectName("Secondary")
+        self.map_reset_btn.setToolTip("恢复当前视图的缩放、位置和相机角度")
+        self.map_reset_btn.clicked.connect(self._reset_map_camera)
+        bar.addWidget(self.map_reset_btn)
+        tools_layout.addLayout(bar)
+        action_bar = QHBoxLayout()
+        action_bar.setSpacing(8)
+        item_title = QLabel("物品")
+        item_title.setObjectName("PanelTitle")
+        action_bar.addWidget(item_title)
+        self.map_item_box = QComboBox()
+        self.map_item_box.setMinimumWidth(150)
+        self.map_item_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.map_item_box.setMinimumContentsLength(12)
+        self.map_item_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        action_bar.addWidget(self.map_item_box, 1)
+        self.map_place_btn = QPushButton("添加物品")
+        self.map_place_btn.setObjectName("ModeButton")
+        self.map_place_btn.setToolTip("进入放置模式，在地图地面点击添加所选物品")
+        self.map_place_btn.setCheckable(True)
+        self.map_place_btn.toggled.connect(self._toggle_map_placement)
+        action_bar.addWidget(self.map_place_btn)
+        self.map_rotate_left = QPushButton("左转 15°")
+        self.map_rotate_left.setObjectName("Secondary")
+        self.map_rotate_left.setToolTip("左转 15°（Q）：旋转预览或选中物品")
+        self.map_rotate_left.clicked.connect(lambda: self.map3d_view.rotate_item(-15.0))
+        action_bar.addWidget(self.map_rotate_left)
+        self.map_rotate_right = QPushButton("右转 15°")
+        self.map_rotate_right.setObjectName("Secondary")
+        self.map_rotate_right.setToolTip("右转 15°（E）：旋转预览或选中物品")
+        self.map_rotate_right.clicked.connect(lambda: self.map3d_view.rotate_item(15.0))
+        action_bar.addWidget(self.map_rotate_right)
+        self.map_delete_btn = QPushButton("删除所选")
+        self.map_delete_btn.setObjectName("Danger")
+        self.map_delete_btn.setEnabled(False)
+        self.map_delete_btn.setToolTip("选中已放置物品后删除（Delete）；保存后写入存档")
+        action_bar.addWidget(self.map_delete_btn)
+        tools_layout.addLayout(action_bar)
+        lay.addWidget(tools)
+
+        self.map3d_view = Map3DWidget()
+        self.map3d_view.placement_callback = self._place_item_at_map_point
+        self.map3d_view.move_callback = self._move_placed_item
+        self.map3d_view.rotate_callback = self._rotate_placed_item
+        self.map3d_view.delete_callback = self._delete_placed_item
+        self.map3d_view.floor_changed_callback = self._on_map_floor_changed
+        self.map3d_view.set_camera_preset("top")
+        self.map_delete_btn.clicked.connect(self.map3d_view.delete_selected_item)
+        self.map3d_view.selection_changed.connect(self._update_map_selection_ui)
+        self.map_item_box.currentIndexChanged.connect(
+            lambda: self.map3d_view.set_preview_item(self.map_item_box.currentData()))
+        self.map_item_box.currentIndexChanged.connect(self._update_map_selection_ui)
+        canvas_frame = QFrame()
+        canvas_frame.setObjectName("ToolPanel")
+        canvas_layout = QVBoxLayout(canvas_frame)
+        canvas_layout.setContentsMargins(1, 1, 1, 1)
+        canvas_layout.setSpacing(0)
+        canvas_layout.addWidget(self.map3d_view, 1)
+        self.map_selection_label = QLabel("选择物品后可拖动、旋转或删除")
+        self.map_selection_label.setObjectName("Muted")
+        self.map_selection_label.setContentsMargins(10, 5, 10, 5)
+        self.map_selection_label.setMinimumWidth(0)
+        self.map_selection_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        canvas_layout.addWidget(self.map_selection_label)
+        lay.addWidget(canvas_frame, 1)
+        # Keep the legend and help in normal layout space, never on the canvas.
+        self.map_footer = QFrame()
+        footer_layout = QVBoxLayout(self.map_footer)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.setSpacing(5)
+        legend = QHBoxLayout()
+        legend.setSpacing(14)
+        from _map_painter import COLORS
+        for kind, color in COLORS.items():
+            label = QLabel(f'<span style="color:{color}">●</span> {kind}')
+            label.setObjectName("Muted")
+            legend.addWidget(label)
+        legend.addStretch(1)
+        self.map_help_btn = QPushButton("操作说明")
+        self.map_help_btn.setObjectName("Secondary")
+        self.map_help_btn.setCheckable(True)
+        self.map_help_btn.setToolTip("展开鼠标与快捷键操作说明")
+        legend.addWidget(self.map_help_btn)
+        footer_layout.addLayout(legend)
+        self.map3d_info = QLabel("打开存档后，从“地图设置”载入游戏场景")
+        self.map3d_info.setObjectName("Muted")
+        self.map3d_info.setWordWrap(True)
+        self.map3d_info.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        footer_layout.addWidget(self.map3d_info)
+        self.map_help = QLabel("中键拖动平移 · 滚轮缩放 · 左键拖动物品移动 / 空白旋转视角\nQ/E 旋转物品 · ↑/↓ 切换楼层 · Delete 删除所选 · 悬停查看名称和尺寸")
+        self.map_help.setWordWrap(True)
+        self.map_help.setObjectName("Muted")
+        self.map_help.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        footer_layout.addWidget(self.map_help)
+        self.map_help.hide()
+        self.map_help_btn.toggled.connect(self.map_help.setVisible)
+        self.map_footer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        lay.addWidget(self.map_footer)
+        self._populate_map_item_box()
+        self._update_map_selection_ui()
+
+    def _reset_map_camera(self):
+        self.map3d_view.set_view_mode(self.map_view_box.currentData())
+        self.map3d_view.set_camera_preset(self.map_camera_box.currentData())
+
+    def _update_map_selection_ui(self, _index=None):
+        view = self.map3d_view
+        placing = view.placement_enabled
+        index = view.selected_marker
+        selected = index is not None and not placing
+        with QSignalBlocker(self.map_place_btn):
+            self.map_place_btn.setChecked(placing)
+        self.map_place_btn.setText("结束放置" if placing else "添加物品")
+        self.map_delete_btn.setEnabled(selected)
+        self.map_rotate_left.setEnabled(placing or selected)
+        self.map_rotate_right.setEnabled(placing or selected)
+        if placing:
+            text = f"正在放置：{self.map_item_box.currentText()} · 点击地面添加，Q / E 调整方向"
+        elif selected:
+            detail = view.point_details.get(("放置物品", f"放置物品 #{index+1}"), {})
+            text = f"已选中：{detail.get('name', '放置物品')} · 朝向 {detail.get('yaw', 0):.0f}° · 拖动可移动"
+        else:
+            text = "中键拖动平移 · 滚轮缩放 · 选择物品后可移动、旋转或删除"
+        self.map_selection_label.setText(text)
+        self.map_selection_label.setToolTip(text)
+
+    def _populate_map_item_box(self):
+        selected = self.map_item_box.currentData()
+        self.map_item_box.clear()
+        definitions = (self.map3d_view.scene or {}).get('item_definitions', {})
+        for item_id, definition in sorted(definitions.items()):
+            if self._can_place_on_map(definition):
+                self.map_item_box.addItem(f"{item_id} · {_ITEM_NAME.get(item_id, str(item_id))}", item_id)
+        index = self.map_item_box.findData(selected)
+        if index >= 0:
+            self.map_item_box.setCurrentIndex(index)
+        elif self.map_item_box.count():
+            self.map_item_box.setCurrentIndex(0)
+        available = self.map_item_box.count() > 0
+        self.map_item_box.setEnabled(available)
+        self.map_item_box.setPlaceholderText("加载场景后选择可放置物品")
+        self.map_item_box.setToolTip("仅列出游戏支持的地面设施；墙面物品需要贴墙放置，暂不列入")
+        self.map_place_btn.setEnabled(available)
+        if not available:
+            self.map_place_btn.setChecked(False)
+
+    @staticmethod
+    def _can_place_on_map(definition):
+        return bool(definition and definition.get('is_placable')
+                    and definition.get('has_placable_component') and not definition.get('is_wall'))
+
+    def _toggle_map_placement(self, enabled):
+        if enabled and (not isinstance(self.data, dict) or self.map_item_box.currentData() is None):
+            self.map_place_btn.setChecked(False)
+            self.map3d_info.setText("请先打开存档、加载场景并选择可放置物品")
+            return
+        if enabled and not self.map3d_view.scene:
+            self.map_place_btn.setChecked(False)
+            self.load_game_scene()
+            return
+        self.map3d_view.set_placement_mode(enabled, self._place_item_at_map_point,
+            self._move_placed_item, self._rotate_placed_item)
+        self.map3d_info.setText("移动鼠标预览位置，Q/E 或旋转按钮调整方向，点击确认放置" if enabled else "已退出放置模式")
+
+    def _select_map_floor(self):
+        mode = self.map_floor_box.currentData()
+        if isinstance(mode, int):
+            self.map3d_view.set_floor_index(mode)
+        elif mode is not None:
+            self.map3d_view.set_floor_mode(mode)
+            self.map_floor_label.setText("全部楼层" if mode == "all" else "楼层")
+            self.map_floor_prev.setEnabled(self.map3d_view.floor_index > 0)
+            self.map_floor_next.setEnabled(self.map3d_view.floor_index + 1 < len(self.map3d_view.floor_levels))
+
+    def _on_map_floor_changed(self, index, total, height):
+        with QSignalBlocker(self.map_floor_box):
+            self.map_floor_box.setCurrentIndex(self.map_floor_box.findData(index))
+        self.map_floor_prev.setEnabled(index > 0)
+        self.map_floor_next.setEnabled(index + 1 < total)
+        self.map_floor_label.setText(f"第 {index + 1}/{total} 层")
+        self.map3d_info.setText(f"当前楼层高度 Y={height:.2f}；点击地面放置物品")
+
+    def _place_item_at_map_point(self, point, yaw=0.0):
+        import math
+        item_id = self.map_item_box.currentData()
+        definition = (self.map3d_view.scene or {}).get('item_definitions', {}).get(item_id)
+        if not isinstance(self.data, dict) or not self._can_place_on_map(definition):
+            self.map3d_info.setText("当前物品不支持在地图地面放置")
+            return False
+        if point is None or len(point) != 3 or not all(math.isfinite(v) for v in point) or not math.isfinite(yaw):
+            return
+        placed = self._list_save(self.placed_table)
+        if not isinstance(placed, list):
+            placed = []
+        item = {
+            "id": str(uuid.uuid4()), "itemDataId": int(item_id),
+            "position": {"x": round(point[0], 6), "y": round(point[1], 6), "z": round(point[2], 6)},
+            "rotation": {"x": 0, "y": round(math.sin(math.radians(yaw)/2), 7),
+                         "z": 0, "w": round(math.cos(math.radians(yaw)/2), 7)},
+            "workerNum": 0, "currentNpcCount": 0, "hackStationIndex": -1,
+            "isShelf": definition['is_shelf'], "assignedNpcId": [], "shelfType": definition['shelf_type'],
+            "tamingNpcs": [], "stockStationIndex": -1,
+            "stockStationTimeInterval": 30, "stockStationStockLimit": 10,
+        }
+        placed.append(item)
+        self.es3_set("PlaceItems", placed)
+        self._list_load(self.placed_table, placed)
+        self.refresh_map3d(preserve_view=True)
+        self._refresh_document_state()
+        self.map3d_info.setText(f"已添加 {_ITEM_NAME.get(int(item_id), item_id)}，坐标 ({point[0]:.2f}, {point[1]:.2f}, {point[2]:.2f})")
+        return True
+
+    def _move_placed_item(self, index, point):
+        placed = self._list_save(self.placed_table)
+        if not isinstance(placed, list) or not (0 <= index < len(placed)) or not isinstance(placed[index], dict):
+            return
+        placed[index]["position"] = {"x": round(point[0], 6), "y": round(point[1], 6), "z": round(point[2], 6)}
+        self.es3_set("PlaceItems", placed)
+        self._list_load(self.placed_table, placed)
+        self.refresh_map3d(preserve_view=True)
+        self._refresh_document_state()
+        self.map3d_info.setText(f"已移动放置物品 #{index+1} 到 ({point[0]:.2f}, {point[1]:.2f}, {point[2]:.2f})")
+
+    def _delete_placed_item(self, index):
+        placed = self._list_save(self.placed_table)
+        detail = self.map3d_view.point_details.get(("放置物品", f"放置物品 #{index+1}"), {})
+        item_id = detail.get('save_id')
+        # The table may have changed since the map was rendered. Resolve the
+        # persistent ID instead of deleting whichever row now has this index.
+        matches = [i for i,item in enumerate(placed or [])
+                   if isinstance(item,dict) and item_id and item.get('id') == item_id]
+        if len(matches) != 1:
+            self.map3d_info.setText("物品记录已变化或 ID 无效，请刷新坐标后重新选择")
+            return False
+        item = placed[matches[0]]
+        if item.get('tamingNpcs'):
+            self.map3d_info.setText("笼中仍有 NPC，请先在游戏中移出后再删除，以免丢失 NPC 数据")
+            return False
+        placed.pop(matches[0])
+        workers = copy.deepcopy(self.workers)
+
+        def clear_assignment(worker):
+            if isinstance(worker,dict):
+                for key in ('assignedBedId','assignedWorkplaceId'):
+                    if worker.get(key) == item_id:
+                        worker[key] = None
+
+        for worker in workers or []:
+            clear_assignment(worker)
+        for remaining in placed:
+            if isinstance(remaining,dict):
+                for worker in remaining.get('tamingNpcs') or []:
+                    clear_assignment(worker)
+        self.es3_set("PlaceItems", placed)
+        self.workers = workers
+        if isinstance(workers,list):
+            self.es3_set("Workers",workers)
+        self.map3d_view._clear_map_selection()
+        self._list_load(self.placed_table,placed)
+        self.refresh_map3d(preserve_view=True)
+        self._refresh_document_state()
+        self.map3d_info.setText(f"已删除 {detail.get('name', '所选物品')}；点击保存写入存档")
+        return True
+
+    def _rotate_placed_item(self, index, degrees):
+        import math
+        placed = self._list_save(self.placed_table)
+        if not isinstance(placed, list) or not (0 <= index < len(placed)) or not isinstance(placed[index], dict):
+            return
+        rotation = rotate_world_y(placed[index].get("rotation") or {}, degrees)
+        placed[index]["rotation"] = {axis: round(value, 7) for axis,value in zip("xyzw",rotation)}
+        self.es3_set("PlaceItems", placed)
+        self._list_load(self.placed_table, placed)
+        self.refresh_map3d(preserve_view=True)
+        self._refresh_document_state()
+        self.map3d_info.setText(f"已旋转放置物品 #{index+1}：{heading(rotation):.0f}°")
+
+    @staticmethod
+    def _map3d_pos(obj):
+        if not isinstance(obj, dict): return None
+        pos = obj.get("position", obj.get("Position"))
+        if not isinstance(pos, dict): return None
+        try:
+            return (float(pos.get("x", 0)), float(pos.get("y", 0)), float(pos.get("z", 0)))
+        except (TypeError, ValueError):
+            return None
+
+    def refresh_map3d(self, checked=False, *, preserve_view=False):
+        import math
+        points = []
+        details = {}
+        sources = (("PlaceItems", "放置物品"), ("Items", "物品"), ("Workers", "工人"), ("Dirt", "污垢"))
+        for key, kind in sources:
+            arr = self.es3_get(key) if isinstance(self.data, dict) else None
+            if not isinstance(arr, list): continue
+            for i, obj in enumerate(arr):
+                pos = self._map3d_pos(obj)
+                if pos is None:
+                    continue
+                label = f"{kind} #{i+1}"
+                points.append((*pos, kind, label))
+                try:
+                    item_id = int(obj.get("itemDataId", obj.get("itemId", -1)))
+                except (TypeError, ValueError):
+                    item_id = -1
+                name = _ITEM_NAME.get(item_id, kind)
+                if kind == "工人":
+                    name = (obj.get("npcDataRole") or {}).get("npcName", kind)
+                definition = (self.map3d_view.scene or {}).get("item_definitions", {}).get(item_id, {})
+                rotation = quaternion(obj.get("rotation") or {})
+                details[(kind, label)] = {"name": name, "item_id": item_id,
+                                         "save_id": obj.get('id'), "rotation": rotation,
+                                         "yaw": heading(rotation),
+                                         "is_wall": bool(definition.get("is_wall"))}
+        self.map3d_view.set_points(points, details, preserve_view=preserve_view)
+        self._update_map_selection_ui()
+        self.map3d_info.setText(f"已绘制 {len(points)} 个坐标点（放置物品/物品/工人/污垢）")
+
+    def load_game_scene(self):
+        data_dir = QSettings().value("map/game_data_dir", "") or r"F:\GameUnpack\UnderKingdom\Scam Center Simulator UnderKingdom_Data"
+        path = os.path.join(data_dir, "level1")
+        if not os.path.isfile(path):
+            self.map3d_info.setText("尚未选择游戏数据目录")
+            return
+        if getattr(self, "_scene_worker", None) and self._scene_worker.isRunning():
+            return
+        self.map3d_info.setText("正在读取游戏场景的地面和墙体布局，请稍候……")
+        self._scene_worker = _SceneLoadWorker(path)
+        self._scene_worker.finished_ok.connect(self._on_scene_loaded)
+        self._scene_worker.failed.connect(lambda msg: self.map3d_info.setText(f"场景解析失败：{msg}"))
+        self._scene_worker.start()
+
+    def choose_game_directory(self):
+        current = QSettings().value("map/game_data_dir", "") or r"F:\GameUnpack\UnderKingdom"
+        directory = QFileDialog.getExistingDirectory(self, "选择游戏目录或游戏数据目录", current)
+        if not directory:
+            return
+        if not os.path.isfile(os.path.join(directory, "level1")):
+            candidates = [os.path.join(directory, name) for name in os.listdir(directory)
+                          if name.endswith("_Data") and os.path.isdir(os.path.join(directory, name))]
+            directory = next((candidate for candidate in candidates
+                              if os.path.isfile(os.path.join(candidate, "level1"))), directory)
+        if not os.path.isfile(os.path.join(directory, "level1")):
+            QMessageBox.warning(self, "未找到游戏场景", "该目录没有 level1 场景文件，请选择游戏安装目录或 *_Data 目录。")
+            return
+        QSettings().setValue("map/game_data_dir", directory)
+        self.load_game_scene()
+
+    def _on_scene_loaded(self, scene):
+        self.map3d_view.set_scene(scene)
+        self._populate_map_item_box()
+        with QSignalBlocker(self.map_floor_box):
+            self.map_floor_box.clear()
+            for index in range(len(self.map3d_view.floor_levels)):
+                self.map_floor_box.addItem(f"第 {index + 1} 层", index)
+            self.map_floor_box.addItem("全部楼层", "all")
+        self._on_map_floor_changed(self.map3d_view.floor_index,
+                                   len(self.map3d_view.floor_levels),
+                                   self.map3d_view._floor_reference())
+        self.refresh_map3d()
+        self.map3d_info.setText(f"已加载游戏地图：{scene.get('object_count', 0)} 个地面/墙体区域")
+        if scene.get('item_profile_error'):
+            self.map3d_info.setText("地图已加载；物品尺寸读取失败，暂用估算外形")
+            self.map3d_info.setToolTip(scene['item_profile_error'])
+
+    def build_placed_and_other_tab(self):
         # 放置物品：列表表格编辑
         lay = QVBoxLayout(self.tab_placed)
         lay.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
@@ -1908,13 +3575,16 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
             self._list_load_impl(table, items if isinstance(items, list) else [])
             for r, value in enumerate(items if isinstance(items, list) else []):
                 header = QTableWidgetItem(str(r + 1))
-                header.setData(Qt.UserRole, copy.deepcopy(value))
+                # QVariantMap alphabetizes dict keys, including nested Unity
+                # quaternions. Keep an ordered JSON payload across the Qt boundary.
+                payload = json.dumps(value, ensure_ascii=False, allow_nan=False)
+                header.setData(Qt.UserRole, payload)
                 table.setVerticalHeaderItem(r, header)
                 for c in range(table.columnCount()):
                     cell = table.item(r, c)
                     if cell:
                         cell.setData(Qt.UserRole + 10, {"ui": [cell.text(), cell.checkState().value],
-                            "value": copy.deepcopy(value)})
+                            "value": payload})
             hidden = getattr(table, "_hide_cols", ())
             for c, spec in enumerate(getattr(table, "_list_meta", {}).get("cols", [])):
                 table.setColumnHidden(c, spec["path"][0] in hidden)
@@ -2056,12 +3726,12 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         out = []
         for r in range(table.rowCount()):
             header = table.verticalHeaderItem(r)
-            seed = header.data(Qt.UserRole) if header else None
+            seed = json.loads(header.data(Qt.UserRole)) if header else None
             if "scalar" in meta:
                 cell = table.item(r, 0)
                 snapshot = cell.data(Qt.UserRole + 10) if cell else None
                 if snapshot and [cell.text(), cell.checkState().value] == snapshot["ui"]:
-                    out.append(copy.deepcopy(snapshot["value"]))
+                    out.append(json.loads(snapshot["value"]))
                 else:
                     out.append(cell.checkState() == Qt.Checked if meta["scalar"] == "bool"
                                else self._text_to_cell(cell.text() if cell else "", meta["scalar"]))
@@ -2524,7 +4194,6 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         hint = QLabel("双击或选中后点【打开】加载对应的存档：")
         hint.setObjectName("Hint")
         lay.addWidget(hint)
-
         listw = QListWidget()
         for p in saves:
             # 显示: 文件名 —— 所在目录 (tooltip 保留完整路径)
@@ -2758,6 +4427,8 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         # 工人
         self.load_extra_ui()
         self.load_workers()
+        if hasattr(self, "map3d_view"):
+            self.refresh_map3d()
 
     # ---------- 加密货币 ----------
     def load_crypto_ui(self):

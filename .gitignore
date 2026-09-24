@@ -13,6 +13,7 @@ dist/
 *.es3.bak
 *.json
 ES3_Backups/
+cache/unity_scene/
 samples/
 example*/
 test_save*/

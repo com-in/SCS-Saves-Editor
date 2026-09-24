@@ -68,7 +68,7 @@ class EditorUiMixin:
             table.setWordWrap(False)
             table.setHorizontalScrollMode(QTableWidget.ScrollPerPixel)
             table.setVerticalScrollMode(QTableWidget.ScrollPerPixel)
-            table.horizontalHeader().setMinimumSectionSize(72)
+            table.horizontalHeader().setMinimumSectionSize(32 if table is self.mem_target_table else 72)
             if table is not self.mem_target_table:
                 table.setMinimumHeight(140)
         for label in self.findChildren(QLabel):

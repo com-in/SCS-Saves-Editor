@@ -115,6 +115,7 @@ class MemScanner:
         self._lock = threading.Lock()
         self._scanned = 0    # 累计已读字节（供 UI 进度显示）
         self._total = 0
+        self._cancel = threading.Event()
         if pid is not None:
             self.attach(pid)
 
@@ -128,15 +129,27 @@ class MemScanner:
         # 版权水印 MD5: d41db6cc96c89ea4078521a41ab373b5
         flags = (PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION
                  | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION)
-        self.h = k32.OpenProcess(flags, False, pid)
-        self.pid = pid
-        if not self.h:
+        handle = k32.OpenProcess(flags, False, pid)
+        if not handle:
             raise OSError(f"OpenProcess({pid}) 失败 error={k32.GetLastError()}")
+        if self.h:
+            k32.CloseHandle(self.h)
+        self.h = handle
+        self.pid = pid
+        self._cancel.clear()
         return self
+
+    def cancel(self):
+        self._cancel.set()
+
+    @property
+    def cancelled(self):
+        return self._cancel.is_set()
 
     def close(self):
         if self.h:
             k32.CloseHandle(self.h); self.h = None
+        self._cancel.set()
 
     def regions(self):
         addr, regs = 0, []
@@ -192,10 +205,16 @@ class MemScanner:
         for base, size in ranges:
             off = 0
             while off < size:
+                if self.cancelled:
+                    return hits
                 n = min(CHUNK, size - off)
+                n -= n % 4
+                if n <= 0:
+                    break
                 buf = self.read(base + off, n)
                 if buf is not None:
-                    arr = np.frombuffer(buf, dtype=dtype)
+                    usable = len(buf) - (len(buf) % 4)
+                    arr = np.frombuffer(buf[:usable], dtype=dtype)
                     idx = np.nonzero(arr == target)[0]
                     for i in idx.tolist():
                         hits.append(base + off + int(i) * 4)
@@ -252,7 +271,8 @@ class MemScanner:
         用一次 stable 排序按命中值分组，避免对每个目标单独遍历全块。"""
         if not names or not values:
             return
-        arr = np.frombuffer(buf, dtype=dtype)
+        usable = len(buf) - (len(buf) % 4)
+        arr = np.frombuffer(buf[:usable], dtype=dtype)
         if arr.size == 0:
             return
         uniq = np.unique(np.array(values, dtype=dtype))     # 已排序、去重
@@ -296,9 +316,15 @@ class MemScanner:
         for base, size in ranges:
             off = 0
             while off < size:
+                if self.cancelled:
+                    return hits
                 n = min(CHUNK, size - off)
+                n -= n % 4
+                if n <= 0:
+                    break
                 buf = self._read_catch(base + off, n)
                 got = len(buf) if buf else n
+                got = max(4, got - (got % 4))
                 with self._lock:
                     self._scanned += got
                 if buf is not None:
@@ -325,7 +351,8 @@ class MemScanner:
                 int_names.append(nm); int_tgts.append(int(v))
             else:
                 float_names.append(nm); float_tgts.append(float(v))
-        regions = regions or self.regions()
+        regions = self.regions() if regions is None else regions
+        self._cancel.clear()
         with self._lock:
             self._scanned = 0
             self._total = sum(sz for _, sz in regions)

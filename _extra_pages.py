@@ -579,7 +579,7 @@ class ExtraPagesMixin:
             it0 = QTableWidgetItem(INTERIOR_CN.get(str(name), str(name)))
             it0.setFlags(it0.flags() & ~Qt.ItemIsEditable)
             it0.setData(Qt.UserRole, name)
-            it0.setData(Qt.UserRole + 1, copy.deepcopy(it))
+            it0.setData(Qt.UserRole + 1, json.dumps(it, ensure_ascii=False, allow_nan=False))
             t.setItem(r, 0, it0)
             # 是否解锁(可编辑勾选)
             it1 = self._new_bool_cell(unlocked)
@@ -641,7 +641,7 @@ class ExtraPagesMixin:
             sc = t.item(r, 2 + typ)
             if sc is not None:
                 selected = (sc.checkState() == Qt.Checked)
-            original = copy.deepcopy(it0.data(Qt.UserRole + 1) or {})
+            original = json.loads(it0.data(Qt.UserRole + 1) or '{}')
             original.update({"upgradeName": str(name),
                              "unlocked": bool(unlocked), "selected": bool(selected)})
             out.append(original)
@@ -728,7 +728,7 @@ class ExtraPagesMixin:
                 continue
             r = t.rowCount(); t.insertRow(r)
             cell = QTableWidgetItem(str(g.get("slotIndex", 0)))
-            cell.setData(Qt.UserRole, copy.deepcopy(g))
+            cell.setData(Qt.UserRole, json.dumps(g, ensure_ascii=False, allow_nan=False))
             t.setItem(r, 0, cell)
             t.setItem(r, 1, QTableWidgetItem(str(g.get("healthNormalized", 1))))
 
@@ -769,7 +769,7 @@ class ExtraPagesMixin:
         guards = []
         for r in range(t.rowCount()):
             it0 = t.item(r, 0); it1 = t.item(r, 1)
-            guard = copy.deepcopy(it0.data(Qt.UserRole) or {}) if it0 else {}
+            guard = json.loads(it0.data(Qt.UserRole) or '{}') if it0 else {}
             guard.update({
                 "slotIndex": self._to_int(it0.text() if it0 is not None else 0),
                 "healthNormalized": self._to_float(it1.text() if it1 is not None else 1),

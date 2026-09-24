@@ -11,7 +11,20 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtWidgets import QApplication, QMessageBox, QTableWidget, QTableWidgetItem
 from main import ES3Editor
-from _save_support import number, integer_list, atomic_write, validate_changes
+from _save_support import number, integer_list, atomic_write, validate_changes, prepare_es3_document
+
+
+def property_orders(value, path=()):
+    """Capture every object order without conflating JSON numeric formatting."""
+    result = {}
+    if isinstance(value, dict):
+        result[path] = tuple(value)
+        for key, child in value.items():
+            result.update(property_orders(child, path + (key,)))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            result.update(property_orders(child, path + (index,)))
+    return result
 
 
 def fixture():
@@ -37,6 +50,20 @@ def fixture():
 
 
 class SaveSupportTests(unittest.TestCase):
+    def test_sequential_unity_components_and_unknown_fields(self):
+        orders = ('xy', 'xyz', 'xyzw', 'rgba', ('x', 'y', 'width', 'height'))
+        for order in orders:
+            expected = dict(zip(order, range(1, len(order) + 1)))
+            broken = dict(reversed(list(expected.items())))
+            fixed = prepare_es3_document({'nested': [broken]})['nested'][0]
+            self.assertEqual(list(fixed), list(order))
+            self.assertEqual(tuple(fixed.values()), tuple(expected.values()))
+            self.assertEqual(fixed, broken)
+        for unknown in ({'z': 1, 'y': 2, 'x': 3, 'extra': 4},
+                        {'y': 'north', 'x': 'east'}, {'y': False, 'x': True},
+                        {'beta': 1, 'alpha': 2}):
+            self.assertEqual(property_orders(prepare_es3_document(unknown)), property_orders(unknown))
+
     def test_numeric_input_rejects_lossy_or_nonfinite_values(self):
         for value in ('NaN', 'inf', '-inf', 'abc', ''):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -72,6 +99,20 @@ class SaveSupportTests(unittest.TestCase):
             candidate[key]['value'] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
                 validate_changes(candidate, original)
+
+    def test_atomic_write_repairs_quaternion_order_without_mutating_input(self):
+        data = {'PlaceItems': {'value': [{'rotation': {'w': 0.8, 'x': 0, 'y': 0.6, 'z': 0},
+                 'unknown': {'z': 2, 'a': 1}}]}}
+        before = json.dumps(data)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'rotation.es3'
+            atomic_write(path, data)
+            saved = json.loads(path.read_text(encoding='utf-8'))
+            item = saved['PlaceItems']['value'][0]
+            self.assertEqual(list(item['rotation']), list('xyzw'))
+            self.assertEqual(list(item['unknown']), ['z', 'a'])
+            self.assertEqual(saved, data)
+        self.assertEqual(json.dumps(data), before)
 
 
 class EditorTests(unittest.TestCase):
@@ -115,6 +156,146 @@ class EditorTests(unittest.TestCase):
         self.assertEqual(self.w.collect_document(), fixture())
         self.assertFalse(self.w.isWindowModified())
 
+    def test_table_roundtrip_preserves_nested_property_order(self):
+        # QVariantMap sorts dict keys, while ES3's Unity type readers consume
+        # values sequentially. Dict equality alone cannot detect this loss.
+        item = {'id': 'order-test', 'rotation': {'x': 0, 'y': 0, 'z': 0, 'w': 1},
+                'nested': {'z_last': 1, 'a_first': 2},
+                'color': {'r': 0.1, 'g': 0.2, 'b': 0.3, 'a': 1}}
+        self.w._list_load(self.w.placed_table, [item])
+        result = self.w._list_save(self.w.placed_table)
+        self.assertEqual(json.dumps(result), json.dumps([item]))
+
+    def test_special_pages_preserve_extension_order_after_edits(self):
+        data = fixture()
+        extension = {'z_custom': {'second': 2, 'first': 1},
+                     'color': {'r': 0.1, 'g': 0.2, 'b': 0.3, 'a': 1},
+                     'rect': {'x': 1, 'y': 2, 'width': 3, 'height': 4}}
+        data['Interior']['value'] = [{'upgradeName': 'CustomInterior', 'unlocked': False,
+            'selected': False, 'extension': copy.deepcopy(extension)}]
+        data['BodyGuard']['value']['guards'][0]['extension'] = copy.deepcopy(extension)
+        w = self.load(data)
+        w.interior_table.item(0, 1).setCheckState(Qt.Checked)
+        w.bodyguard_table.item(0, 1).setText('0.75')
+        result = w.collect_document()
+        self.assertTrue(result['Interior']['value'][0]['unlocked'])
+        self.assertEqual(result['BodyGuard']['value']['guards'][0]['healthNormalized'], 0.75)
+        for record in (result['Interior']['value'][0], result['BodyGuard']['value']['guards'][0]):
+            self.assertEqual(record['extension'], extension)
+            self.assertEqual(property_orders(record['extension']), property_orders(extension))
+
+    def test_json_export_repairs_reordered_unity_components(self):
+        data = fixture()
+        data['CustomGeometry'] = {'value': {'position': {'x': 1, 'y': 2, 'z': 3}}}
+        w = self.load(data)
+        w.other_key_box.setCurrentIndex(w.other_key_box.findText('CustomGeometry'))
+        w.other_json.setPlainText('{"position":{"z":3,"y":2,"x":1},"color":{"a":1,"b":0.3,"g":0.2,"r":0.1}}')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'export.json'
+            with patch('_document.QFileDialog.getSaveFileName', return_value=(str(path), '')):
+                self.assertTrue(w.export_json())
+            result = json.loads(path.read_text(encoding='utf-8'))['CustomGeometry']['value']
+            self.assertEqual(tuple(result['position'].values()), (1, 2, 3))
+            self.assertEqual(tuple(result['color'].values()), (0.1, 0.2, 0.3, 1))
+        self.assertIsNone(w.file_path)
+
+    def test_saved_rotations_match_sequential_game_reader(self):
+        data = fixture()
+        expected = {'x': 0.0, 'y': 0.6, 'z': 0.0, 'w': 0.8}
+        # Reproduce files already written with alphabetically sorted keys.
+        broken = {axis: expected[axis] for axis in 'wxyz'}
+        for key in ('PlaceItems', 'Items', 'Workers'):
+            data[key]['value'] = [{'id': key, 'itemDataId': 42, 'itemId': 42,
+                'position': {'x': 1.0, 'y': 2.0, 'z': 3.0},
+                'rotation': copy.deepcopy(broken)}]
+        w = self.load(data)
+        before = copy.deepcopy(w.data)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'fixed.es3'
+            self.assertTrue(w._write_document(str(path)))
+            saved = json.loads(path.read_text(encoding='utf-8'))
+            for key in ('PlaceItems', 'Items', 'Workers'):
+                rotation = saved[key]['value'][0]['rotation']
+                self.assertEqual(list(rotation), list('xyzw'))
+                self.assertEqual(tuple(rotation.values()), tuple(expected.values()))
+            self.assertEqual(saved, before)  # Only property order is repaired.
+            self.assertEqual(json.dumps(w.collect_document()), json.dumps(saved))
+
+    def test_map_move_and_rotation_refresh_preview_and_save_together(self):
+        data = fixture()
+        data['PlaceItems']['value'] = [{
+            'id': 'placed-test', 'itemDataId': 42,
+            'position': {'x': 0.0, 'y': -1.5, 'z': 0.0},
+            'rotation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0},
+            'unknownMetadata': 'preserve',
+        }]
+        self.load(data)
+        self.w._move_placed_item(0, (2.0, -1.5, 4.0))
+        self.w._rotate_placed_item(0, 90)
+        point = next(p for p in self.w.map3d_view.points if p[3] == '放置物品')
+        self.assertEqual(point[:3], (2.0, -1.5, 4.0))
+        detail = self.w.map3d_view.point_details[point[3:]]
+        self.assertAlmostEqual(detail['yaw'], 90, places=4)
+        self.assertNotEqual(detail['name'], '放置物品')
+        saved = self.w.collect_document()['PlaceItems']['value'][0]
+        self.assertEqual(saved['position'], {'x': 2.0, 'y': -1.5, 'z': 4.0})
+        self.assertAlmostEqual(saved['rotation']['y'], 2**-0.5, places=6)
+        self.assertEqual(saved['unknownMetadata'], 'preserve')
+        self.assertTrue(self.w.isWindowModified())
+
+    def test_wall_sign_classification_does_not_modify_save(self):
+        from tests.test_map import floor
+        data = fixture()
+        data['PlaceItems']['value'] = [{'id':'wall-sign','itemDataId':82,
+            'position':{'x':-2.39295578,'y':1.2375623,'z':-0.8861097},
+            'rotation':{'x':0,'y':0,'z':0,'w':1}}]
+        w = self.load(data)
+        levels = [-4.6170687675,-1.7475000001,2.1148311496]
+        w._on_scene_loaded({'objects':[floor(y) for y in levels],
+            'floor_levels':levels,'item_definitions':{82:{'is_wall':True}}})
+        before = copy.deepcopy(w.collect_document())
+        w.map3d_view.set_floor_index(1)
+        visible = [p for p in w.map3d_view._visible_points() if p[3]=='放置物品']
+        self.assertEqual(len(visible),1)
+        self.assertEqual(visible[0][1],1.2375623)
+        self.assertTrue(w.map3d_view.point_details[visible[0][3:]]['is_wall'])
+        w.map3d_view.set_floor_index(2)
+        self.assertFalse([p for p in w.map3d_view._visible_points() if p[3]=='放置物品'])
+        self.assertEqual(w.collect_document(),before)
+
+    def test_map_floor_controls_follow_arrow_navigation(self):
+        from tests.test_map import floor
+        w = self.w
+        w._on_scene_loaded({"objects": [floor(-1.5),floor(2)], "floor_levels": [-1.5,2]})
+        w.map3d_view.set_floor_index(0)
+        self.assertEqual(w.map_floor_box.currentData(),0)
+        self.assertFalse(w.map_floor_prev.isEnabled())
+        w.map_floor_next.click()
+        self.assertEqual(w.map_floor_box.currentData(),1)
+        self.assertFalse(w.map_floor_next.isEnabled())
+        w.map_floor_box.setCurrentIndex(w.map_floor_box.findData("all"))
+        self.assertEqual(w.map3d_view.floor_mode,"all")
+        w.map_floor_prev.click()
+        self.assertEqual(w.map3d_view.floor_mode,"level")
+        self.assertEqual(w.map_floor_box.currentData(),0)
+
+    def test_map_rotation_preserves_pitch_roll_and_refreshes_full_quaternion(self):
+        from _map_items import quaternion, rotate_world_y
+        original = quaternion((0.2,0.3,-0.1,0.9))
+        data = fixture()
+        data['PlaceItems']['value'] = [{'id':'tilted','itemDataId':2,
+            'position':{'x':0,'y':0,'z':0}, 'rotation':dict(zip('xyzw',original))}]
+        self.load(data)
+        self.w._rotate_placed_item(0,35)
+        saved = self.w.collect_document()['PlaceItems']['value'][0]['rotation']
+        expected = rotate_world_y(original,35)
+        for axis,value in zip('xyzw',expected):
+            self.assertAlmostEqual(saved[axis],value,places=6)
+        details=self.w.map3d_view.point_details[("放置物品","放置物品 #1")]
+        self.assertEqual(details['item_id'],2)
+        for actual,value in zip(details['rotation'],expected):
+            self.assertAlmostEqual(actual,value,places=6)
+
     def test_actual_save_roundtrips(self):
         for name in ('666.es3', 'awapro.es3'):
             path = Path(__file__).resolve().parents[1] / name
@@ -124,6 +305,194 @@ class EditorTests(unittest.TestCase):
             with self.subTest(save=name):
                 self.load(data)
                 self.assertEqual(self.w.collect_document(), data)
+                saved = self.w.collect_document()
+                self.assertEqual(property_orders(saved), property_orders(data))
+                for key in ('PlaceItems', 'Items', 'Workers'):
+                    for item in saved.get(key, {}).get('value', []):
+                        if isinstance(item, dict) and isinstance(item.get('rotation'), dict):
+                            self.assertEqual(list(item['rotation']), list('xyzw'))
+
+    def _placement_scene(self):
+        from tests.test_map import floor
+        definitions = {
+            0: dict(is_placable=True,has_placable_component=True,is_wall=False,is_shelf=False,shelf_type=0),
+            50: dict(is_placable=True,has_placable_component=True,is_wall=False,is_shelf=True,shelf_type=3),
+            115: dict(is_placable=True,has_placable_component=True,is_wall=False,is_shelf=False,shelf_type=0),
+            2: dict(is_placable=False,has_placable_component=False,is_wall=False,is_shelf=False,shelf_type=0),
+            9: dict(is_placable=True,has_placable_component=True,is_wall=True,is_shelf=False,shelf_type=0)}
+        return {'objects':[floor(-1.5),floor(2)],'floor_levels':[-1.5,2],'item_definitions':definitions}
+
+    def _deletion_fixture(self):
+        data=fixture()
+        data['PlaceItems']['value']=[
+            {'id':'remove-me','itemDataId':0,'position':{'x':-2,'y':-1.5,'z':0},
+             'rotation':{'x':0,'y':0,'z':0,'w':1},'tamingNpcs':[], 'extra':'keep-until-deleted'},
+            {'id':'keep-me','itemDataId':50,'position':{'x':2,'y':-1.5,'z':0},
+             'rotation':{'x':0,'y':0,'z':0,'w':1},'tamingNpcs':[], 'extra':{'keep':True}}]
+        data['Workers']['value'][0].update(assignedBedId='remove-me',assignedWorkplaceId='keep-me')
+        data['Workers']['value'][1].update(assignedWorkplaceId='remove-me',assignedBedId=None)
+        return data
+
+    def _select_first_map_item(self):
+        from PySide6.QtCore import QEvent,QPointF
+        from PySide6.QtGui import QMouseEvent
+        view=self.w.map3d_view
+        view.set_placement_mode(False)
+        view.resize(900,650)
+        view.set_floor_index(0)
+        view.set_camera_preset('top')
+        point=view.points[0]
+        *_,mx,mz,scale,cx,cy=view._scene_bounds()
+        sx,sy,_=view._project(point[0]-mx,point[1],point[2]-mz,scale,cx,cy)
+        cursor=QPointF(sx,sy)
+        for event_type,buttons in ((QEvent.MouseButtonPress,Qt.LeftButton),(QEvent.MouseButtonRelease,Qt.NoButton)):
+            QApplication.sendEvent(view,QMouseEvent(event_type,cursor,cursor,Qt.LeftButton,buttons,Qt.NoModifier))
+        self.assertEqual(view.selected_marker,0)
+        self.assertTrue(self.w.map_delete_btn.isEnabled())
+
+    def test_map_delete_key_clears_assignments_and_saves_without_deleting_next_item(self):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+        data=self._deletion_fixture()
+        w=self.load(data)
+        w._on_scene_loaded(self._placement_scene())
+        self._select_first_map_item()
+        view=w.map3d_view
+        bounds=view._scene_bounds()
+        QApplication.sendEvent(view,QKeyEvent(QEvent.KeyPress,Qt.Key_Delete,Qt.NoModifier))
+        result=w.collect_document()
+        self.assertEqual(result['PlaceItems']['value'],data['PlaceItems']['value'][1:])
+        self.assertIsNone(result['Workers']['value'][0]['assignedBedId'])
+        self.assertIsNone(result['Workers']['value'][1]['assignedWorkplaceId'])
+        self.assertEqual(result['Workers']['value'][0]['assignedWorkplaceId'],'keep-me')
+        self.assertIsNone(view.selected_marker)
+        self.assertFalse(w.map_delete_btn.isEnabled())
+        self.assertEqual(view._scene_bounds(),bounds)
+        self.assertEqual(len([p for p in view.points if p[3]=='放置物品']),1)
+        QApplication.sendEvent(view,QKeyEvent(QEvent.KeyPress,Qt.Key_Delete,Qt.NoModifier))
+        self.assertEqual(w.collect_document(),result)
+        self.assertTrue(w.isWindowModified())
+        for key in data:
+            if key not in ('PlaceItems','Workers'):
+                self.assertEqual(result[key],data[key])
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'deleted.es3'
+            self.assertTrue(w._write_document(str(path)))
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8')),result)
+
+    def test_map_delete_button_resolves_id_after_table_reorder(self):
+        data=self._deletion_fixture()
+        w=self.load(data)
+        w._on_scene_loaded(self._placement_scene())
+        self._select_first_map_item()
+        w._list_load(w.placed_table,list(reversed(data['PlaceItems']['value'])))
+        w.map_delete_btn.click()
+        self.assertEqual([x['id'] for x in w.collect_document()['PlaceItems']['value']],['keep-me'])
+
+    def test_map_delete_protects_occupied_cage_and_hidden_selection(self):
+        data=self._deletion_fixture()
+        data['PlaceItems']['value'][0]['tamingNpcs']=[{'id':'cage-npc','isTamed':False}]
+        w=self.load(data)
+        w._on_scene_loaded(self._placement_scene())
+        self._select_first_map_item()
+        before=w.collect_document()
+        w.map_delete_btn.click()
+        self.assertEqual(w.collect_document(),before)
+        self.assertIn('NPC',w.map3d_info.text())
+        w.map3d_view.set_floor_index(1)
+        self.assertFalse(w.map_delete_btn.isEnabled())
+        self.assertFalse(w.map3d_view.delete_selected_item())
+        self.assertEqual(w.collect_document(),before)
+
+    def test_map_click_places_on_active_floor_without_camera_jump_and_roundtrips(self):
+        from PySide6.QtCore import QEvent,QPointF
+        from PySide6.QtGui import QMouseEvent
+        from _map_items import heading
+        w = self.w
+        w._on_scene_loaded(self._placement_scene())
+        view=w.map3d_view
+        view.resize(900,650)
+        view.set_floor_index(1)
+        view.set_camera_preset('angle')
+        view.pan_x,view.pan_y,view.zoom=35,-20,1.6
+        w.map_item_box.setCurrentIndex(w.map_item_box.findData(50))
+        w.map_place_btn.setChecked(True)
+        view.preview_yaw=90
+        bounds=view._scene_bounds()
+        *_,mx,mz,scale,cx,cy=bounds
+        target=(1.5,2.0,-1.0)
+        sx,sy,_=view._project(target[0]-mx,target[1],target[2]-mz,scale,cx,cy)
+        cursor=QPointF(sx,sy)
+        for event_type,button,buttons in (
+            (QEvent.MouseMove,Qt.NoButton,Qt.NoButton),
+            (QEvent.MouseButtonPress,Qt.LeftButton,Qt.LeftButton),
+            (QEvent.MouseButtonRelease,Qt.LeftButton,Qt.NoButton)):
+            QApplication.sendEvent(view,QMouseEvent(event_type,cursor,cursor,button,buttons,Qt.NoModifier))
+        saved=w.collect_document()
+        self.assertEqual(len(saved['PlaceItems']['value']),1)
+        item=saved['PlaceItems']['value'][0]
+        self.assertEqual(item['itemDataId'],50)
+        self.assertEqual(item['position'],dict(zip(('x','y','z'),target)))
+        self.assertAlmostEqual(heading(item['rotation']),90)
+        self.assertTrue(item['isShelf'])
+        self.assertEqual(item['shelfType'],3)
+        self.assertEqual(item['assignedNpcId'],[])
+        self.assertEqual(view._scene_bounds(),bounds)
+        self.assertEqual(len([p for p in view._visible_points() if p[3]=='放置物品']),1)
+        self.assertTrue(w.isWindowModified())
+        # A second placement must use the same view and a different persistent ID.
+        w.map_item_box.setCurrentIndex(w.map_item_box.findData(115))
+        self.assertTrue(w._place_item_at_map_point((-2,2,1),180))
+        items=w.collect_document()['PlaceItems']['value']
+        self.assertEqual(items[1]['tamingNpcs'],[])
+        self.assertNotEqual(items[0]['id'],items[1]['id'])
+        self.assertEqual(view._scene_bounds(),bounds)
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'placed.es3'
+            self.assertTrue(w._write_document(str(path)))
+            self.assertFalse(w.isWindowModified())
+            self.load(json.loads(path.read_text(encoding='utf-8')))
+            self.assertEqual(w.collect_document()['PlaceItems']['value'],items)
+
+    def test_map_placement_preserves_existing_actual_save_rows(self):
+        for name in ('awapro.es3','666.es3'):
+            path=Path(__file__).resolve().parents[1]/name
+            if not path.exists():
+                continue
+            with self.subTest(save=name):
+                data=json.loads(path.read_text(encoding='utf-8-sig'))
+                w=self.load(data)
+                w._on_scene_loaded(self._placement_scene())
+                w.map_item_box.setCurrentIndex(w.map_item_box.findData(115))
+                self.assertTrue(w._place_item_at_map_point((1,2,3),75))
+                result=w.collect_document()
+                self.assertEqual(result['PlaceItems']['value'][:-1],data['PlaceItems']['value'])
+                self.assertEqual(json.dumps(result['PlaceItems']['value'][:-1]),
+                                 json.dumps(data['PlaceItems']['value']))
+                added=result['PlaceItems']['value'][-1]
+                self.assertEqual(added['tamingNpcs'],[])
+                self.assertEqual(added['assignedNpcId'],[])
+                self.assertEqual(added['position'],{'x':1,'y':2,'z':3})
+                for key in data:
+                    if key != 'PlaceItems':
+                        self.assertEqual(result[key],data[key])
+
+    def test_map_placement_filters_invalid_items_and_rejects_empty_click(self):
+        from PySide6.QtCore import QEvent,QPointF
+        from PySide6.QtGui import QMouseEvent
+        w=self.w
+        w._on_scene_loaded(self._placement_scene())
+        self.assertEqual({w.map_item_box.itemData(i) for i in range(w.map_item_box.count())},{0,50,115})
+        before=w.collect_document()
+        w.map_place_btn.setChecked(True)
+        cursor=QPointF(-100,-100)
+        QApplication.sendEvent(w.map3d_view,QMouseEvent(QEvent.MouseButtonPress,cursor,cursor,Qt.LeftButton,Qt.LeftButton,Qt.NoModifier))
+        self.assertEqual(w.collect_document(),before)
+        # Guard the write path too, even if an unsupported ID reaches the selector.
+        w.map_item_box.addItem('unsupported',2)
+        w.map_item_box.setCurrentIndex(w.map_item_box.findData(2))
+        self.assertFalse(w._place_item_at_map_point((0,-1.5,0)))
+        self.assertEqual(w.collect_document(),before)
 
     def test_crypto_decimals_and_price_history(self):
         self.w.crypto_table.item(0, 1).setText('18.125')

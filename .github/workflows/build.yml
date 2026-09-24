@@ -35,6 +35,8 @@ jobs:
             --hidden-import numpy `
             --hidden-import numpy.core `
             --collect-all numpy `
+            --hidden-import unity_scene_loader `
+            --collect-all UnityPy `
             "main.py"
         shell: pwsh
 
