@@ -42,6 +42,8 @@ from PySide6.QtCore import Qt, QSignalBlocker, QVariantAnimation, QEasingCurve, 
 from _memscan import MemScanner, find_game_process
 from _role_data import ROLE_NAME as _ROLE_NAME  # 员工职业 id->中文名 映射（混淆数据）
 from _item_data import USER_ITEM_NAME as _ITEM_NAME  # 物品 id->中文名 映射（混淆数据）
+from _item_labels import item_label, item_sort_key
+from _search_combo import SearchComboBox
 from _extra_pages import ExtraPagesMixin
 from _document import DocumentMixin
 from _editor_ui import EditorUiMixin
@@ -1159,6 +1161,7 @@ class _SceneLoadWorker(QThread):
                 result = load_item_profiles(os.path.dirname(self.path), cache_dir)
                 scene['item_profiles'] = result['profiles']
                 scene['item_definitions'] = result['definitions']
+                scene['item_catalog_error'] = result.get('catalog_error')
             except Exception as exc:
                 scene['item_profile_error'] = str(exc)
             self.finished_ok.emit(scene)
@@ -3024,7 +3027,8 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         item_title = QLabel("物品")
         item_title.setObjectName("PanelTitle")
         action_bar.addWidget(item_title)
-        self.map_item_box = QComboBox()
+        self.map_item_box = SearchComboBox()
+        self.map_item_search = self.map_item_box.search
         self.map_item_box.setMinimumWidth(150)
         self.map_item_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.map_item_box.setMinimumContentsLength(12)
@@ -3112,6 +3116,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         self.map_help_btn.toggled.connect(self.map_help.setVisible)
         self.map_footer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         lay.addWidget(self.map_footer)
+        self.map_item_search.textChanged.connect(self._populate_map_item_box)
         self._populate_map_item_box()
         self._update_map_selection_ui()
 
@@ -3140,30 +3145,66 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         self.map_selection_label.setText(text)
         self.map_selection_label.setToolTip(text)
 
-    def _populate_map_item_box(self):
+    def _populate_map_item_box(self, _text=None):
         selected = self.map_item_box.currentData()
-        self.map_item_box.clear()
+        terms = self.map_item_search.text().casefold().split()
         definitions = (self.map3d_view.scene or {}).get('item_definitions', {})
-        for item_id, definition in sorted(definitions.items()):
-            if self._can_place_on_map(definition):
-                self.map_item_box.addItem(f"{item_id} · {_ITEM_NAME.get(item_id, str(item_id))}", item_id)
-        index = self.map_item_box.findData(selected)
-        if index >= 0:
-            self.map_item_box.setCurrentIndex(index)
-        elif self.map_item_box.count():
-            self.map_item_box.setCurrentIndex(0)
+        with QSignalBlocker(self.map_item_box):
+            self.map_item_box.clear()
+            for item_id, definition in sorted(definitions.items(),
+                                              key=lambda pair: item_sort_key(*pair)):
+                name = self._item_label(item_id)
+                if self._can_place_on_map(definition) and all(t in name.casefold() for t in terms):
+                    self.map_item_box.addItem(name, item_id)
+            index = self.map_item_box.findData(selected)
+            self.map_item_box.setCurrentIndex(index if index >= 0 else 0 if self.map_item_box.count() else -1)
         available = self.map_item_box.count() > 0
-        self.map_item_box.setEnabled(available)
-        self.map_item_box.setPlaceholderText("加载场景后选择可放置物品")
-        self.map_item_box.setToolTip("仅列出游戏支持的地面设施；墙面物品需要贴墙放置，暂不列入")
+        # Keep the popup accessible when a query has no matches, so users can
+        # reopen it and clear the search.
+        self.map_item_box.setEnabled(any(self._can_place_on_map(d) for d in definitions.values()))
+        self.map_item_box.sync_results()
+        self.map_item_box.setPlaceholderText("没有匹配的物品" if terms else "加载游戏后选择物品")
+        self.map_item_box.setToolTip("按床铺、工作、生活、供电、收纳、特殊设施、娱乐、装饰排列；同名物品按等级升序。可添加商店或市长兑换的地面设施")
         self.map_place_btn.setEnabled(available)
         if not available:
             self.map_place_btn.setChecked(False)
+        self.map3d_view.set_preview_item(self.map_item_box.currentData())
+        self._update_map_selection_ui()
 
     @staticmethod
     def _can_place_on_map(definition):
         return bool(definition and definition.get('is_placable')
-                    and definition.get('has_placable_component') and not definition.get('is_wall'))
+                    and definition.get('has_placable_component') and not definition.get('is_wall')
+                    and (definition.get('in_shop') is True or definition.get('in_mayor_exchange') is True)
+                    and definition.get('registered') is True)
+
+    def _item_label(self, item_id, fallback=None):
+        view = getattr(self, 'map3d_view', None)
+        definition = ((view.scene or {}).get('item_definitions', {}).get(item_id)
+                      if view is not None else None)
+        return item_label(item_id, definition, fallback)
+
+    def _refresh_item_labels(self):
+        # Scene metadata may arrive after editing starts. Update read-only names
+        # without reloading rows or overwriting unsaved table cells.
+        for table in (self.items_table, self.placed_table):
+            specs = getattr(table, '_list_meta', {}).get('cols', [])
+            with QSignalBlocker(table):
+                for column, spec in enumerate(specs):
+                    if not spec.get('is_name'):
+                        continue
+                    id_column = next((i for i, s in enumerate(specs)
+                                      if s['path'] == [spec['id']]), None)
+                    if id_column is None:
+                        continue
+                    for row in range(table.rowCount()):
+                        cell, id_cell = table.item(row, column), table.item(row, id_column)
+                        try:
+                            item_id = int(id_cell.text())
+                        except (AttributeError, ValueError):
+                            continue
+                        if cell:
+                            cell.setText(self._item_label(item_id))
 
     def _toggle_map_placement(self, enabled):
         if enabled and (not isinstance(self.data, dict) or self.map_item_box.currentData() is None):
@@ -3223,7 +3264,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         self._list_load(self.placed_table, placed)
         self.refresh_map3d(preserve_view=True)
         self._refresh_document_state()
-        self.map3d_info.setText(f"已添加 {_ITEM_NAME.get(int(item_id), item_id)}，坐标 ({point[0]:.2f}, {point[1]:.2f}, {point[2]:.2f})")
+        self.map3d_info.setText(f"已添加 {self._item_label(int(item_id))}，坐标 ({point[0]:.2f}, {point[1]:.2f}, {point[2]:.2f})")
         return True
 
     def _move_placed_item(self, index, point):
@@ -3319,7 +3360,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
                     item_id = int(obj.get("itemDataId", obj.get("itemId", -1)))
                 except (TypeError, ValueError):
                     item_id = -1
-                name = _ITEM_NAME.get(item_id, kind)
+                name = self._item_label(item_id, kind)
                 if kind == "工人":
                     name = (obj.get("npcDataRole") or {}).get("npcName", kind)
                 definition = (self.map3d_view.scene or {}).get("item_definitions", {}).get(item_id, {})
@@ -3364,6 +3405,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
 
     def _on_scene_loaded(self, scene):
         self.map3d_view.set_scene(scene)
+        self._refresh_item_labels()
         self._populate_map_item_box()
         with QSignalBlocker(self.map_floor_box):
             self.map_floor_box.clear()
@@ -3378,6 +3420,9 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         if scene.get('item_profile_error'):
             self.map3d_info.setText("地图已加载；物品尺寸读取失败，暂用估算外形")
             self.map3d_info.setToolTip(scene['item_profile_error'])
+        elif scene.get('item_catalog_error'):
+            self.map3d_info.setText("地图已加载；无法核实商店或市长兑换清单，暂时禁用新增物品，已有存档物品仍可查看和编辑")
+            self.map3d_info.setToolTip(scene['item_catalog_error'])
 
     def build_placed_and_other_tab(self):
         # 放置物品：列表表格编辑
@@ -3659,7 +3704,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
                 if spec.get("is_name"):
                     idv = self._pick_path(it, [spec["id"]])
                     if isinstance(idv, (int, float)):
-                        cell = QTableWidgetItem(_ITEM_NAME.get(int(idv), f"未知物品({int(idv)})"))
+                        cell = QTableWidgetItem(self._item_label(int(idv)))
                     else:
                         cell = QTableWidgetItem("")
                     cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)

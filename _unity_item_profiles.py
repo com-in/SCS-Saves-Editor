@@ -54,6 +54,7 @@ def _placement_definition(raw):
     _, offset = _string(raw, offset+8)
     if struct.unpack_from('<i', raw, offset+8)[0] != 0:
         raise ValueError('Unsupported localized variables')
+    tier = struct.unpack_from('<i', raw, offset+12)[0]
     offset += 16  # localized tail and tier
     flags = struct.unpack_from('<14i', raw, offset)
     if any(value not in (0, 1) for value in flags):
@@ -62,10 +63,85 @@ def _placement_definition(raw):
     shelf_type = struct.unpack_from('<i', raw, offset+76)[0]
     if shelf_type not in range(6) or not math.isfinite(interval):
         raise ValueError('Invalid facility defaults')
-    return {'is_placable': bool(flags[0]), 'is_shelf': bool(flags[3]),
+    return {'tier': tier, 'is_placable': bool(flags[0]), 'is_shelf': bool(flags[3]),
             'is_wall': bool(flags[4]), 'is_cage': bool(flags[12]),
             'is_stock_station': bool(flags[13]), 'shelf_type': shelf_type,
             'stock_index': stock_index, 'stock_interval': interval}
+
+
+def _read_item_refs(raw, offset, item_file, item_ids):
+    """Read a bounded serialized List<ItemData>; reject unknown references."""
+    count = struct.unpack_from('<i', raw, offset)[0]
+    if count < 0 or count > 10000 or offset + 4 + count * 12 > len(raw):
+        raise ValueError('Invalid scene item list')
+    result = []
+    for index in range(count):
+        file_id, path_id = struct.unpack_from('<iq', raw, offset + 4 + index * 12)
+        if file_id != item_file or path_id not in item_ids:
+            raise ValueError('Unknown scene ItemData reference')
+        result.append(item_ids[path_id])
+    return result
+
+
+def _read_mayor_refs(raw, offset, item_file, item_ids):
+    """MayorExchange: ItemData PPtr, two amounts, then a variable NpcRole list."""
+    count = struct.unpack_from('<i', raw, offset)[0]
+    offset += 4
+    if count < 0 or count > 10000:
+        raise ValueError('Invalid mayor exchange count')
+    result = []
+    for _ in range(count):
+        if offset + 24 > len(raw):
+            raise ValueError('Truncated mayor exchange')
+        file_id, path_id, required, current, roles = struct.unpack_from('<iqiii', raw, offset)
+        if file_id != item_file or path_id not in item_ids:
+            raise ValueError('Unknown mayor ItemData reference')
+        if required < 0 or current < 0 or roles < 0 or roles > 10000:
+            raise ValueError('Invalid mayor exchange fields')
+        offset += 24 + roles * 12
+        if offset > len(raw):
+            raise ValueError('Truncated mayor role list')
+        result.append(item_ids[path_id])
+    return result
+
+
+def _scene_item_catalog(env, data_dir, script_classes, item_ids):
+    """Current main scene's serialized shop and save-load registry, not assets alone."""
+    scene = env.load_file(os.path.join(data_dir, 'level1'))
+    refs = {os.path.basename(ref.path.replace('\\', '/')): i + 1
+            for i, ref in enumerate(scene.externals)}
+    script_file, item_file = refs['globalgamemanagers.assets'], refs['sharedassets1.assets']
+    shops, registries, mayors = [], [], []
+    for obj in scene.objects.values():
+        if obj.type.name != 'MonoBehaviour':
+            continue
+        raw = obj.get_raw_data()
+        if len(raw) < 32:
+            continue
+        file_id, script_id = struct.unpack_from('<iq', raw, 16)
+        if file_id != script_file:
+            continue
+        kind = script_classes.get(script_id)
+        if kind not in ('ShopSystem', 'HouseManager', 'MayoMenuManager'):
+            continue
+        _, start = _string(raw, 28)
+        if kind == 'ShopSystem':
+            # debtManager, itemPrefab, content (PPtr); currency, meat, level.
+            shops.append(_read_item_refs(raw, start + 48, item_file, item_ids))
+        elif kind == 'MayoMenuManager':
+            mayors.append(_read_mayor_refs(raw, start, item_file, item_ids))
+        else:
+            # shelfItems is empty in the shipped scene; never guess its layout.
+            if struct.unpack_from('<i', raw, start)[0] != 0:
+                raise ValueError('Unsupported scene shelfItems data')
+            registry = _read_item_refs(raw, start + 4, item_file, item_ids)
+            # HouseManager.GetItemDataFromId indexes directly into this list.
+            if registry != list(range(len(registry))):
+                raise ValueError('Item registry indices do not match ItemData IDs')
+            registries.append(registry)
+    if len(shops) != 1 or len(registries) != 1 or len(mayors) != 1 or not shops[0]:
+        raise ValueError('Cannot verify unique shop, mayor exchange and item registry')
+    return set(shops[0]), set(registries[0]), set(mayors[0])
 
 
 def extract_item_profiles(data_dir):
@@ -83,7 +159,7 @@ def extract_item_profiles(data_dir):
     assets = env.load_file(os.path.join(data_dir, 'sharedassets1.assets'))
     script_files = {i+1 for i, ref in enumerate(assets.externals)
                     if os.path.basename(ref.path.replace('\\', '/')) == 'globalgamemanagers.assets'}
-    profiles, definitions, missing = {}, {}, []
+    profiles, definitions, missing, item_ids = {}, {}, [], {}
     for obj in list(assets.objects.values()):
         if obj.type.name != 'MonoBehaviour':
             continue
@@ -95,6 +171,7 @@ def extract_item_profiles(data_dir):
             continue
         try:
             item_id, name, (file_id, path_id) = _item_header(raw)
+            item_ids[obj.path_id] = item_id
             definition = _placement_definition(raw)
             definition['has_placable_component'] = False
             definitions[item_id] = definition
@@ -147,13 +224,24 @@ def extract_item_profiles(data_dir):
             missing.append({'asset': obj.path_id, 'reason': str(exc)})
     if not profiles:
         raise ValueError('无法读取当前游戏版本的物品碰撞体尺寸')
-    return {'profiles': profiles, 'definitions': definitions, 'missing': missing}
+    catalog_error = None
+    try:
+        shop_ids, registered_ids, mayor_ids = _scene_item_catalog(env, data_dir, script_classes, item_ids)
+        for item_id, definition in definitions.items():
+            definition['in_shop'] = item_id in shop_ids
+            definition['registered'] = item_id in registered_ids
+            definition['in_mayor_exchange'] = item_id in mayor_ids
+    except (OSError, ValueError, KeyError, struct.error) as exc:
+        # Geometry still works; unverified items must not become addable.
+        catalog_error = str(exc)
+    return {'profiles': profiles, 'definitions': definitions, 'missing': missing,
+            'catalog_error': catalog_error}
 
 
 def load_item_profiles(data_dir, cache_dir):
-    sources = [os.path.join(data_dir, name) for name in ('globalgamemanagers.assets', 'sharedassets1.assets')]
+    sources = [os.path.join(data_dir, name) for name in ('globalgamemanagers.assets', 'sharedassets1.assets', 'level1')]
     identity = '|'.join(f'{os.path.abspath(p)}:{os.stat(p).st_size}:{os.stat(p).st_mtime_ns}' for p in sources)
-    key = hashlib.sha256(('item-boxes-v2|'+identity).encode('utf-8')).hexdigest()
+    key = hashlib.sha256(('item-boxes-v5|'+identity).encode('utf-8')).hexdigest()
     path = os.path.join(cache_dir, 'items-'+key+'.json')
     try:
         with open(path, encoding='utf-8') as fh:

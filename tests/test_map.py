@@ -13,6 +13,30 @@ from main import Map3DWidget
 from unity_scene_loader import _rotate
 from _map_items import box_corners, heading, quaternion, rotate_world_y, yaw_rotation
 from _unity_item_profiles import transform_corners
+from _unity_item_profiles import _read_item_refs, _read_mayor_refs
+
+
+class SceneCatalogTests(unittest.TestCase):
+    def test_mayor_rewards_skip_variable_role_lists(self):
+        import struct
+        raw = (struct.pack('<i', 2) + struct.pack('<iqiii', 3, 101, 2, 0, 1)
+               + struct.pack('<iq', 3, 999) + struct.pack('<iqiii', 3, 102, 4, 0, 0))
+        self.assertEqual(_read_mayor_refs(raw, 0, 3, {101: 38, 102: 55}), [38, 55])
+        for malformed, lookup in ((raw[:-1], {101: 38, 102: 55}), (raw, {101: 38}),
+                                  (struct.pack('<i', -1), {})):
+            with self.subTest(raw=malformed), self.assertRaises(ValueError):
+                _read_mayor_refs(malformed, 0, 3, lookup)
+
+    def test_item_reference_list_rejects_truncated_and_unknown_entries(self):
+        import struct
+        raw = struct.pack('<iiqiq', 2, 3, 101, 3, 102)
+        self.assertEqual(_read_item_refs(raw, 0, 3, {101: 11, 102: 98}), [11, 98])
+        for malformed, lookup in ((raw[:-1], {101: 11, 102: 98}),
+                                  (raw, {101: 11}),
+                                  (struct.pack('<i', -1), {}),
+                                  (struct.pack('<iiq', 1, 4, 101), {101: 11})):
+            with self.subTest(raw=malformed), self.assertRaises(ValueError):
+                _read_item_refs(malformed, 0, 3, lookup)
 
 
 def floor(y):

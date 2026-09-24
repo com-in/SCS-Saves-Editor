@@ -138,6 +138,7 @@ class EditorTests(unittest.TestCase):
         w.data = copy.deepcopy(data)
         w.file_path = None
         w.search_entry.clear()
+        w.map_item_search.clear()
         w.parse_data_to_ui()
         w._loading = False
         w._remember_saved()
@@ -155,6 +156,37 @@ class EditorTests(unittest.TestCase):
     def test_fixture_roundtrip_preserves_every_field(self):
         self.assertEqual(self.w.collect_document(), fixture())
         self.assertFalse(self.w.isWindowModified())
+
+    def test_item_tiers_display_without_changing_save(self):
+        from _item_labels import item_label
+        self.assertEqual(item_label(98), '床 Lv 2')
+        self.assertEqual(item_label(99), '床 Lv 3')
+        self.assertEqual(item_label(100), '床 Lv 4')
+        self.assertEqual(item_label(0), '床')
+        self.assertEqual(item_label(999999), '未知物品(999999)')
+        data = fixture()
+        data['PlaceItems']['value'] = [{'id': 'tier-bed', 'itemDataId': 98,
+            'position': {'x': 0, 'y': -1.5, 'z': 0}}]
+        data['Items']['value'][0]['itemId'] = 96
+        self.w.map3d_view.scene = None
+        w = self.load(data)
+        self.assertEqual(w.placed_table.item(0, 0).text(), '床 Lv 2')
+        self.assertTrue(w.items_table.item(0, 0).text().endswith(' Lv 3'))
+        self.assertEqual(w.map3d_view.point_details[('放置物品', '放置物品 #1')]['name'], '床 Lv 2')
+        scene = self._placement_scene()
+        scene['item_definitions'][98] = dict(scene['item_definitions'][0], tier=4, level=90)
+        w._on_scene_loaded(scene)
+        self.assertEqual(w.placed_table.item(0, 0).text(), '床 Lv 4')
+        self.assertIn('床 Lv 4', w.map_item_box.itemText(w.map_item_box.findData(98)))
+        self.assertEqual(w.collect_document(), data)
+        w._refresh_document_state()
+        self.assertFalse(w.isWindowModified())
+        column = next(i for i,s in enumerate(w.placed_table._list_meta['cols'])
+                      if s['name'] == 'position.x')
+        w.placed_table.item(0, column).setText('12')
+        w._on_scene_loaded(scene)
+        self.assertEqual(w.placed_table.item(0, column).text(), '12')
+        self.assertEqual(w.collect_document()['PlaceItems']['value'][0]['position']['x'], 12)
 
     def test_table_roundtrip_preserves_nested_property_order(self):
         # QVariantMap sorts dict keys, while ES3's Unity type readers consume
@@ -320,7 +352,121 @@ class EditorTests(unittest.TestCase):
             115: dict(is_placable=True,has_placable_component=True,is_wall=False,is_shelf=False,shelf_type=0),
             2: dict(is_placable=False,has_placable_component=False,is_wall=False,is_shelf=False,shelf_type=0),
             9: dict(is_placable=True,has_placable_component=True,is_wall=True,is_shelf=False,shelf_type=0)}
+        for definition in definitions.values():
+            definition.update(in_shop=True, registered=True)
         return {'objects':[floor(-1.5),floor(2)],'floor_levels':[-1.5,2],'item_definitions':definitions}
+
+    def test_unlisted_and_unverified_items_cannot_be_added_but_existing_are_preserved(self):
+        data = fixture()
+        data['PlaceItems']['value'] = [{'id': 'legacy-bed', 'itemDataId': 11,
+            'position': {'x': 0, 'y': -1.5, 'z': 0}}]
+        w = self.load(data)
+        scene = self._placement_scene()
+        template = scene['item_definitions'][0]
+        scene['item_definitions'][11] = dict(template, in_shop=False)
+        scene['item_definitions'][111] = dict(template, tier=999)
+        scene['item_definitions'][999998] = dict(template, registered=False)
+        scene['item_definitions'][999999] = dict(template)
+        del scene['item_definitions'][999999]['in_shop']
+        w._on_scene_loaded(scene)
+        for item_id in (11, 999998, 999999):
+            self.assertEqual(w.map_item_box.findData(item_id), -1)
+            w.map_item_box.addItem('injected', item_id)
+            w.map_item_box.setCurrentIndex(w.map_item_box.count() - 1)
+            self.assertFalse(w._place_item_at_map_point((0, -1.5, 0)))
+        self.assertGreaterEqual(w.map_item_box.findData(111), 0)
+        self.assertIn('Lv 999', w.map_item_box.itemText(w.map_item_box.findData(111)))
+        self.assertEqual(w.collect_document(), data)
+        self.assertTrue(any(p[3] == '放置物品' for p in w.map3d_view.points))
+
+    def test_mayor_items_use_name_only_and_keep_internal_id(self):
+        w = self.w
+        scene = self._placement_scene()
+        scene['item_definitions'][38] = dict(scene['item_definitions'][50],
+            in_shop=False, in_mayor_exchange=True, tier=2)
+        w._on_scene_loaded(scene)
+        index = w.map_item_box.findData(38)
+        self.assertGreaterEqual(index, 0)
+        self.assertEqual(w.map_item_box.itemText(index), '饮水机 Lv 2')
+        w.map_item_box.setCurrentIndex(index)
+        self.assertTrue(w._place_item_at_map_point((0, -1.5, 0)))
+        self.assertEqual(w.collect_document()['PlaceItems']['value'][0]['itemDataId'], 38)
+        scene['item_definitions'][38]['is_wall'] = True
+        w._on_scene_loaded(scene)
+        self.assertEqual(w.map_item_box.findData(38), -1)
+
+    def test_map_item_order_groups_purpose_and_numeric_tiers(self):
+        from _item_labels import item_label
+        w = self.w
+        scene = self._placement_scene()
+        template = scene['item_definitions'][0]
+        ids = [151, 97, 111, 99, 100, 98, 52, 41, 96, 95, 42, 46, 23, 72]
+        scene['item_definitions'] = {i: dict(template) for i in ids}
+        w._on_scene_loaded(scene)
+        expected = [98, 99, 100, 41, 95, 96, 97, 52, 111, 42, 46, 23, 72, 151]
+        self.assertEqual([w.map_item_box.itemData(i) for i in range(w.map_item_box.count())], expected)
+        self.assertEqual([w.map_item_box.itemText(i) for i in range(w.map_item_box.count())],
+                         [item_label(i) for i in expected])
+        w.map_item_box.setCurrentIndex(w.map_item_box.findData(96))
+        before = w.collect_document()
+        scene['item_definitions'] = dict(reversed(list(scene['item_definitions'].items())))
+        w._populate_map_item_box()
+        self.assertEqual(w.map_item_box.currentData(), 96)
+        self.assertEqual([w.map_item_box.itemData(i) for i in range(w.map_item_box.count())], expected)
+        self.assertEqual(w.collect_document(), before)
+
+    def test_map_item_search_filters_names_and_tiers_without_editing_save(self):
+        w = self.w
+        scene = self._placement_scene()
+        template = scene['item_definitions'][0]
+        scene['item_definitions'] = {i: dict(template) for i in (98, 99, 100, 95, 96)}
+        w._on_scene_loaded(scene)
+        before = w.collect_document()
+        w.map_item_box.setCurrentIndex(w.map_item_box.findData(99))
+        w.map_item_search.setText('床')
+        self.assertEqual([w.map_item_box.itemData(i) for i in range(w.map_item_box.count())], [98, 99, 100])
+        self.assertEqual(w.map_item_box.currentData(), 99)
+        w.map_item_search.setText(' 床 lv 3 ')
+        self.assertEqual(w.map_item_box.count(), 1)
+        self.assertEqual(w.map3d_view.preview_item_id, 99)
+        w.map_place_btn.setChecked(True)
+        w.map_item_search.setText('不存在的物品')
+        self.assertEqual(w.map_item_box.count(), 0)
+        self.assertFalse(w.map_place_btn.isEnabled())
+        self.assertFalse(w.map3d_view.placement_enabled)
+        self.assertIsNone(w.map3d_view.preview_item_id)
+        self.assertEqual(w.map_item_box.placeholderText(), '没有匹配的物品')
+        w.map_item_search.clear()
+        self.assertEqual(w.map_item_box.count(), 5)
+        self.assertTrue(w.map_place_btn.isEnabled())
+        self.assertEqual(w.collect_document(), before)
+        w._refresh_document_state()
+        self.assertFalse(w.isWindowModified())
+
+    def test_search_lives_in_popup_and_recovers_from_empty_results(self):
+        from PySide6.QtTest import QTest
+        w = self.w
+        w._on_scene_loaded(self._placement_scene())
+        combo = w.map_item_box
+        self.assertIs(w.map_item_search.parentWidget(), combo.popup)
+        self.assertFalse(combo.popup.isVisible())
+        combo.showPopup()
+        self.assertTrue(w.map_item_search.isVisible())
+        w.map_item_search.setText('没有这个物品')
+        self.assertTrue(combo.isEnabled())
+        self.assertTrue(combo.empty_label.isVisible())
+        QTest.keyClick(w.map_item_search, Qt.Key_Return)
+        self.assertTrue(combo.popup.isVisible())
+        QTest.keyClick(w.map_item_search, Qt.Key_Escape)
+        self.assertFalse(combo.popup.isVisible())
+        combo.showPopup()
+        w.map_item_search.clear()
+        selected_id = combo.itemData(1)
+        QTest.keyClick(w.map_item_search, Qt.Key_Down)
+        QTest.keyClick(w.map_item_search, Qt.Key_Return)
+        self.assertEqual(combo.currentData(), selected_id)
+        self.assertFalse(combo.popup.isVisible())
+        self.assertFalse(w.map_item_search.isVisible())
 
     def _deletion_fixture(self):
         data=fixture()

@@ -17,9 +17,11 @@ class DocumentMixin:
             self.interior_table, self.dirt_table, self.bodyguard_table, self.airport_table}
         state = {}
         for table in tables:
+            name_columns = {i for i, spec in enumerate(
+                getattr(table, '_list_meta', {}).get('cols', [])) if spec.get('is_name')}
             state[id(table)] = [
-                [(cell.text(), cell.checkState().value) if cell else None
-                 for cell in (table.item(r, c) for c in range(table.columnCount()))]
+                [(cell.text(), cell.checkState().value) if cell and c not in name_columns else None
+                 for c, cell in enumerate(table.item(r, c) for c in range(table.columnCount()))]
                 for r in range(table.rowCount())]
         state['basic'] = [e.text() for e in self.entry_basic.values()]
         state['purchase'] = [self.npcp_entries['count'].text(),
