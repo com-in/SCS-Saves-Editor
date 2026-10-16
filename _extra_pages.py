@@ -72,6 +72,7 @@ class ExtraPagesMixin:
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setFocusPolicy(Qt.NoFocus)
         inner = QWidget()
+        inner.setObjectName("PageSurface")
         lay = QVBoxLayout(inner)
         lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
         scroll.setWidget(inner)
@@ -98,7 +99,7 @@ class ExtraPagesMixin:
     def _build_extra_growth(self):
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         lay = self._scroll_lay(self.tab_growth)
-        lay.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
+        lay.setContentsMargins(PAGE_MARGIN, 10, PAGE_MARGIN, PAGE_MARGIN)
         lay.setSpacing(SECTION_SPACING)
         self._page_header(lay, "📈 成长进度", "剧情进度解锁、彩蛋激活 等成长类统计")
 
@@ -141,7 +142,7 @@ class ExtraPagesMixin:
         self._page_header(lay, "🛒 人口采购", "设置每次购买人数、采购间隔与自动采购开关")
         card = QFrame(); card.setObjectName("CardBox")
         cv = QVBoxLayout(card)
-        cv.setContentsMargins(14, 12, 14, 12); cv.setSpacing(10)
+        cv.setContentsMargins(12, 10, 12, 10); cv.setSpacing(8)
         tt = QLabel("🛒 人口采购 (NpcPurchase)")
         tt.setObjectName("CardTitle"); cv.addWidget(tt)
         form = QGridLayout(); form.setHorizontalSpacing(12); form.setVerticalSpacing(10)

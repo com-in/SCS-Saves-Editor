@@ -50,6 +50,7 @@ BEPINEX_FALLBACK_URL = (
 BEPINEX_ASSET_PREFIX = "BepInEx_win_x64"
 HTTP_USER_AGENT = "SCS-Saves-Editor"
 DEFAULT_MANIFEST_NAME = os.path.join("docs", "mods_index.json")
+DEFAULT_MANIFEST_URL = "https://scsed.ctfun.top/mods_index.json"
 DOWNLOAD_CHUNK = 65536
 
 PAGE_MARGIN = 16
@@ -176,6 +177,10 @@ def _process_image_path(pid):
     """Full path of a running process exe, or '' when unavailable."""
     try:
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.restype = wintypes.BOOL
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
         handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
@@ -245,6 +250,10 @@ def _default_game_roots():
         if os.path.isdir(epic):
             roots.append(epic)
     for drive in ("C", "D", "E", "F", "G"):
+        for name in ("Games", "Game", "GameUnpack", "Epic Games"):
+            candidate = f"{drive}:\\{name}"
+            if os.path.isdir(candidate):
+                roots.append(candidate)
         for name in ("SteamLibrary", "Steam", "Games", "Game"):
             candidate = f"{drive}:\\{name}\\steamapps\\common"
             if os.path.isdir(candidate):
@@ -583,8 +592,9 @@ class ModsPageMixin:
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setFocusPolicy(Qt.NoFocus)
         inner = QWidget()
+        inner.setObjectName("PageSurface")
         body = QVBoxLayout(inner)
-        body.setContentsMargins(PAGE_MARGIN, 12, PAGE_MARGIN, 10)
+        body.setContentsMargins(PAGE_MARGIN, 10, PAGE_MARGIN, PAGE_MARGIN)
         body.setSpacing(SECTION_SPACING)
         scroll.setWidget(inner)
         outer = QVBoxLayout(self.tab_mods)
@@ -901,10 +911,7 @@ class ModsPageMixin:
 
     # ---------------- state helpers ----------------
     def _mods_init_state(self):
-        local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), DEFAULT_MANIFEST_NAME)
-        value = QSettings().value("mods/manifest_url", "") or ""
-        if not value and os.path.isfile(local_path):
-            value = local_path
+        value = QSettings().value("mods/manifest_url", "") or DEFAULT_MANIFEST_URL
         with QSignalBlocker(self.mods_manifest_edit):
             self.mods_manifest_edit.setText(value)
 

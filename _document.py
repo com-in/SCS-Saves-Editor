@@ -141,6 +141,8 @@ class DocumentMixin:
         self._mem_sync_save_label()
         self.log('已打开存档。保存时自动备份；Ctrl+S 保存，Ctrl+Shift+S 另存为。')
         self.set_status(f'已加载 {len(candidate)} 个存档键')
+        if self.map3d_view.scene is None:
+            self.load_game_scene()
         return True
 
     def _write_document(self, path, *, switch=True):
@@ -186,6 +188,11 @@ class DocumentMixin:
         return self._write_document(path, switch=False) if path else False
 
     def closeEvent(self, event):
+        scene_worker = getattr(self, '_scene_worker', None)
+        if scene_worker is not None and scene_worker.isRunning():
+            self.set_status('正在查找游戏目录或加载地图，请稍候再退出')
+            event.ignore()
+            return
         if getattr(self, '_update_download_reply', None) is not None:
             self.set_status('正在下载更新，请先在下载窗口取消或等待下载完成')
             event.ignore()

@@ -10,7 +10,7 @@ from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem
-from main import ES3Editor
+from main import ES3Editor, GuideDialog, GUIDE_CONTENT
 from _save_support import number, integer_list, atomic_write, validate_changes, prepare_es3_document
 
 
@@ -152,6 +152,53 @@ class EditorTests(unittest.TestCase):
         self.dialog_guard.start()
         self.addCleanup(self.dialog_guard.stop)
         self.w = self.load(fixture())
+
+    def test_guide_covers_every_navigation_page(self):
+        self.assertEqual(set(self.w._nav_keys), set(GUIDE_CONTENT))
+        dialog = GuideDialog(self.w, "workers")
+        self.addCleanup(dialog.deleteLater)
+        self.assertEqual(dialog.pages.currentItem().text(), "工人")
+        dialog.pages.setCurrentRow(dialog._keys.index("mods"))
+        self.assertIn("BepInEx", dialog.detail.toPlainText())
+
+    def test_update_and_guide_actions_share_one_help_menu(self):
+        menus = [action.text() for action in self.w.menuBar().actions()]
+        self.assertEqual(sum("帮助" in text for text in menus), 1)
+        help_menu = self.w._help_menu
+        actions = [action.text() for action in help_menu.actions()]
+        self.assertIn("新手指引", actions)
+        self.assertIn("检查更新…", actions)
+
+    def test_open_save_starts_map_discovery_before_visiting_map(self):
+        w = self.w
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'save.es3'
+            path.write_text(json.dumps(fixture()), encoding='utf-8')
+            with patch.object(w, 'load_game_scene') as load, \
+                 patch.object(w.map3d_view, 'scene', None), \
+                 patch.object(w, '_record_recent_file'):
+                self.assertTrue(w._load_file(path))
+                load.assert_called_once_with()
+                self.assertFalse(w.isWindowModified())
+            with patch.object(w, 'load_game_scene') as load, \
+                 patch.object(w.map3d_view, 'scene', {'objects': []}), \
+                 patch.object(w, '_record_recent_file'):
+                self.assertTrue(w._load_file(path))
+                load.assert_not_called()
+            with patch.object(w, 'load_game_scene') as load, \
+                 patch.object(w, '_confirm_discard', return_value=False):
+                self.assertFalse(w._load_file(path))
+                load.assert_not_called()
+
+    def test_closing_waits_for_map_discovery_worker(self):
+        from PySide6.QtGui import QCloseEvent
+        from unittest.mock import Mock
+        event = QCloseEvent()
+        worker = Mock()
+        worker.isRunning.return_value = True
+        with patch.object(self.w, '_scene_worker', worker, create=True):
+            self.w.closeEvent(event)
+        self.assertFalse(event.isAccepted())
 
     def test_mods_page_is_usable_without_an_open_save(self):
         # The mod installer only touches the game directory, so its page must
@@ -678,6 +725,29 @@ class EditorTests(unittest.TestCase):
         self.assertEqual(self.w.difficulty_combo.currentData(), 0)
         self.w.difficulty_combo.setCurrentIndex(3)
         self.assertEqual(self.w.collect_document()['Difficulty']['value'], 3)
+
+    def test_worker_form_stays_compact_when_window_grows(self):
+        w = self.w
+        w.show()
+        self.app.processEvents()
+        w.showNormal()
+        w.stack.setCurrentWidget(w.tab_workers)
+        w.worker_list.setCurrentRow(0)
+        heights = []
+        for height in (700, 1050):
+            w.resize(1200, height)
+            self.app.processEvents()
+            first = w.worker_entries['money'].parentWidget()
+            last = w.worker_entries['thirstValue'].parentWidget()
+            heights.append(last.geometry().bottom() - first.geometry().top())
+            self.assertLessEqual(w.worker_title.geometry().top(), 12)
+            header = w.tab_workers.layout().itemAt(0).widget()
+            self.assertLessEqual(header.height(), header.sizeHint().height() + 2)
+        self.assertLessEqual(abs(heights[0] - heights[1]), 2)
+        w.worker_scroll.resize(500, 200)
+        self.app.processEvents()
+        self.assertGreater(w.worker_scroll.verticalScrollBar().maximum(), 0)
+        w.hide()
 
     def test_filtered_worker_edits_correct_person(self):
         self.w.search_entry.setText('Bob')

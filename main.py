@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem,
     QFileDialog, QMessageBox, QSplitter, QFrame, QStatusBar, QToolButton,
     QStackedWidget, QListWidgetItem, QSizePolicy, QComboBox, QDialog, QSpinBox,
-    QProgressBar, QMenu,
+    QProgressBar, QMenu, QScrollArea,
 )
 from PySide6.QtGui import QFont, QIcon, QColor, QPixmap, QPolygon
 from PySide6.QtCore import Qt, QSignalBlocker, QVariantAnimation, QEasingCurve, QTimer, QSize, QThread, Signal, QSettings, QPoint, QStandardPaths
@@ -98,9 +98,9 @@ DARK_THEME = {
 
 # ==================== UI 统一规范常量 ====================
 ROUNDED_CORNER = 10      # 卡片/面板统一圆角半径(px)
-PAGE_MARGIN = 16         # 页面统一内容边距(px)
-SECTION_SPACING = 12     # 页面内节/元素统一间距(px)
-TABLE_FIXED_HEIGHT = 220 # 列表表格统一最大高度(px)
+PAGE_MARGIN = 14         # 页面统一内容边距(px)
+SECTION_SPACING = 9      # 页面内节/元素统一间距(px)
+TABLE_FIXED_HEIGHT = 210 # 列表表格统一最大高度(px)
 
 def build_qss(theme):
     """根据主题字典生成完整 QSS，避免各处内联散落样式"""
@@ -110,14 +110,14 @@ def build_qss(theme):
     S = theme["SUCCESS"]; W = theme["WARNING"]; D = theme["DANGER"]; BD = theme["BORDER"]
     RC = ROUNDED_CORNER  # 统一圆角半径
     return f"""
-* {{ font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; }}
+* {{ font-family: "Microsoft YaHei UI", "Segoe UI", "Segoe UI Symbol", "Segoe UI Emoji", sans-serif; }}
 QMainWindow {{ background: {BG}; }}
 QWidget {{ background: {BG}; color: {T}; font-size: 13px; }}
 QWidget#ValueRow {{ background: transparent; }}
 QLabel {{ background: transparent; }}
 QLabel#CardTitle {{ color: {T}; font-weight: bold; font-size: 14px; }}
 QLabel#Hint {{ color: {W}; font-size: 12px; }}
-QLabel#PageTitle {{ color: {T}; font-size: 20px; font-weight: bold; }}
+QLabel#PageTitle {{ color: {T}; font-size: 18px; font-weight: bold; }}
 QLabel#ModsScopeBadge {{
     color: {ACC}; background: {ENTRY}; border: 1px solid {ACC};
     border-radius: 10px; padding: 4px 10px; font-size: 12px; font-weight: bold;
@@ -141,7 +141,7 @@ QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {{ border: 1px solid {ACC
 
 QPushButton {{
     background: {ACC}; color: {BG}; border: none;
-    border-radius: 6px; padding: 8px 16px; font-weight: bold;
+    border-radius: 5px; padding: 2px 10px; min-height: 24px; max-height: 28px; font-weight: bold;
 }}
 QPushButton:hover {{ background: {ACH}; }}
 QPushButton:pressed {{ background: {ACC}; }}
@@ -153,7 +153,7 @@ QStatusBar QPushButton#Ghost {{ padding: 2px 10px; }}
 QPushButton#WelcomeCard {{
     background: {CARD}; color: {T}; border: 1px solid {BD};
     border-radius: 12px; padding: 16px 18px; font-weight: bold;
-    font-size: 14px; text-align: left; min-height: 44px;
+    font-size: 14px; text-align: left; min-height: 44px; max-height: 64px;
 }}
 QPushButton#WelcomeCard:hover {{ border: 1px solid {ACC}; background: {ENTRY}; }}
 QToolButton#Ghost {{ background: {CARD}; color: {T}; border: 1px solid {BD}; border-radius: 6px; }}
@@ -171,10 +171,10 @@ QListWidget::item:hover:!selected {{ background: {CARD}; }}
 
 QTreeWidget#Nav {{
     background: {CARD}; border: 1px solid {BD}; border-radius: {RC}px;
-    padding: 6px; outline: 0; color: {T}; font-size: 13px;
+    padding: 4px; outline: 0; color: {T}; font-size: 12px;
 }}
 QTreeWidget#Nav::item {{
-    padding: 8px 10px; border-radius: {RC}px; margin: 1px 0;
+    padding: 6px 8px; border-radius: 6px; margin: 1px 0;
 }}
 QTreeWidget#Nav::item:hover {{ background: {ENTRY}; }}
 QTreeWidget#Nav::item:selected {{
@@ -188,14 +188,15 @@ QLabel#DocumentBadge {{ color: {S}; background: {CARD}; border: 1px solid {BD}; 
 QLabel#DocumentBadge[dirty="true"] {{ color: {W}; border-color: {W}; }}
 QFrame#CardBox {{ background: {CARD}; border: 1px solid {BD}; border-radius: 8px; }}
 QFrame#FieldBox {{ background: {CARD}; border: 1px solid {BD}; border-radius: 6px; }}
+QFrame#CardBox QLabel#CardTitle {{ margin-bottom: 2px; }}
 
-QFrame#ToolPanel {{ background: {CARD}; border: 1px solid {BD}; border-radius: 10px; }}
+QFrame#ToolPanel {{ background: {CARD}; border: 1px solid {BD}; border-radius: 8px; }}
 QWidget#PanelBody {{ background: transparent; }}
 QLabel#PanelTitle {{ color: {T}; font-size: 13px; font-weight: bold; }}
 QLabel#EmptyTitle {{ color: {TS}; font-size: 15px; font-weight: bold; }}
 QLabel#StatusChip {{ background: {BG}; color: {TS}; border: 1px solid {BD}; border-radius: 6px; padding: 4px 8px; }}
 QLabel#StatusChip[active="true"] {{ color: {ACC}; border-color: {ACC}; }}
-QWidget#MapPage QPushButton, QWidget#MemoryPage QPushButton, QWidget#ModsPage QPushButton {{ padding: 7px 12px; }}
+QWidget#MapPage QPushButton, QWidget#MemoryPage QPushButton, QWidget#ModsPage QPushButton {{ padding: 2px 10px; }}
 QPushButton#Secondary {{ background: {ENTRY}; color: {T}; border: 1px solid {BD}; }}
 QPushButton#Secondary:hover {{ border-color: {ACC}; color: {ACC}; }}
 QPushButton#ModeButton {{ background: {CARD}; color: {ACC}; border: 1px solid {ACC}; }}
@@ -257,6 +258,19 @@ QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 QSplitter::handle {{ background: {BD}; width: 2px; }}
 QStatusBar {{ background: {BG}; color: {TS}; border-top: 1px solid {BD}; }}
 QStackedWidget {{ background: {BG}; border: none; }}
+QWidget#PageSurface {{ background: {BG}; }}
+QWidget#PageHeader {{ background: transparent; border-bottom: 1px solid {BD}; }}
+QTableWidget {{
+    background: {CARD}; alternate-background-color: {ENTRY};
+    border: 1px solid {BD}; border-radius: 8px; padding: 2px;
+    gridline-color: transparent; selection-background-color: {ACC};
+    selection-color: {BG};
+}}
+QTableWidget::item {{ padding: 5px 7px; border-bottom: 1px solid {BD}; }}
+QHeaderView::section {{
+    background: {ENTRY}; color: {TS}; border: none;
+    border-bottom: 1px solid {BD}; padding: 7px 8px; font-weight: bold;
+}}
 """
 
 def _lerp_color(c1, c2, t):
@@ -371,6 +385,77 @@ class Card(QFrame):
         lab = QLabel(title)
         lab.setObjectName("CardTitle")
         self._lay.addWidget(lab)
+
+
+GUIDE_CONTENT = {
+    "home": ("首页", "从这里开始操作存档。", [
+        "点击“打开存档”选择 .es3 文件，或用“查找存档”自动扫描。",
+        "修改后点击顶部“保存”写入原文件，程序会自动创建备份。",
+        "最近打开列表可以双击快速恢复上次编辑的存档。",
+    ]),
+    "basic": ("基础数据", "修改货币、等级和核心数值。", ["直接编辑输入框中的数值。", "难度使用下拉框选择。", "保存后才会写入存档。"]),
+    "workers": ("工人", "编辑工人的属性、职业和状态。", ["在左侧选择工人，可用搜索框按姓名或职业筛选。", "修改金钱、能力、状态值、职业及驯服/死亡状态。", "“全部加满”与“重置状态”会批量修改当前存档数据。"]),
+    "crypto": ("加密货币", "修改币种价格和持有量。", ["在表格中双击对应单元格编辑。", "保存后写入 CryptoData。"]),
+    "items": ("物品", "查看和编辑库存物品。", ["每行代表一个库存物品。", "position、rotation 等结构字段会拆成独立列。", "可新增或删除行，保存前请确认数量和编号。"]),
+    "placed": ("放置物品", "编辑地图中已经放置的物品。", ["修改位置、旋转和数量等字段。", "地图页可以直观看到坐标效果。", "删除行会从存档中移除对应放置物品。"]),
+    "upgrade": ("升级", "查看和调整设施、技能升级等级。", ["可使用“一键升级全部满级”。", "单项等级可在表格中编辑。"]),
+    "growth": ("成长进度", "管理剧情进度和彩蛋状态。", ["使用“一键完成/激活”快速修改。", "也可以在表格中逐项调整。"]),
+    "purchase": ("人口采购", "设置每次采购数量、间隔和自动采购。", ["填写数量与秒数，勾选自动采购。", "范围校验会在保存时执行。"]),
+    "municipal": ("市政管理", "管理市长队列和已发现职业。", ["市长队列可编辑状态和位置。", "已发现职业列表用于展示和新增。"]),
+    "interior": ("店面装修", "修改墙面、地面和家具升级。", ["中文名称只用于显示，保存时保留游戏原始名称。", "按升级项修改等级。"]),
+    "bodyguard": ("保镖状态", "编辑保镖槽位和生命状态。", ["修改表格中的槽位、生命值和启用状态。"]),
+    "tutorial": ("教程标记", "管理教程是否解锁。", ["勾选对应行即可切换解锁状态。", "可使用一键解锁全部教程。"]),
+    "schedule": ("来电队列", "编辑电话/事件队列。", ["调整队列项目后保存即可生效。"]),
+    "gamestats": ("成就统计", "查看和修改游戏统计数据。", ["统计名称为中文显示，保存仍使用原始字段。"]),
+    "cat": ("宠物猫", "编辑领养、猫咪编号和喂养记录。", ["修改输入框后保存。", "列表字段使用逗号分隔。"]),
+    "delivery": ("配送点", "切换已解锁的配送位置。", ["从下拉框选择目标配送点。"]),
+    "airport": ("机场队列", "编辑机场 NPC 队列。", ["表格支持逐项修改和行操作。"]),
+    "map3d": ("游戏地图", "在真实游戏场景轮廓上查看和调整物品。", ["打开存档后程序会自动查找游戏目录并加载场景。", "中键平移、滚轮缩放，左键拖动物品；Q/E 旋转。", "在“地图设置”中可重新加载、自动查找或选择游戏目录。"]),
+    "memory": ("内存扫描", "扫描运行中的游戏进程并定位动态数值。", ["先启动游戏并选择存档，再检测进程。", "选择目标后首次扫描；回到游戏改变数值，再筛选候选。", "只写入勾选的地址，使用前请备份存档。"]),
+    "unlock": ("解锁管理", "统一管理债务、剧情和教程解锁。", ["按页面中的一键操作批量修改。", "所有修改仍需点击保存才会写入文件。"]),
+    "other": ("其他", "编辑未被专用页面覆盖的 ES3 字段。", ["先从下拉框选择字段。", "复杂结构可使用 JSON 编辑器，保持合法 JSON。"]),
+    "mods": ("安装 Mod", "安装和管理 BepInEx 与 Mod。", ["自动查找或选择游戏安装目录。", "可安装 BepInEx、本地压缩包、DLL 或文件直链。", "安装/卸载操作只修改游戏目录，不修改存档。"]),
+}
+
+
+class GuideDialog(QDialog):
+    def __init__(self, parent=None, initial="home"):
+        super().__init__(parent)
+        self.setWindowTitle("新手指引")
+        self.resize(820, 560)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        title = QLabel("新手指引")
+        title.setObjectName("PageTitle")
+        layout.addWidget(title)
+        sub = QLabel("按功能查看操作方法和注意事项。数据修改后请记得保存存档。")
+        sub.setObjectName("PageSub")
+        layout.addWidget(sub)
+        split = QSplitter(Qt.Horizontal)
+        self.pages = QListWidget()
+        self.pages.setMinimumWidth(180)
+        self.detail = QTextEdit()
+        self.detail.setReadOnly(True)
+        self.detail.setObjectName("GuideDetail")
+        split.addWidget(self.pages)
+        split.addWidget(self.detail)
+        split.setSizes([210, 560])
+        layout.addWidget(split, 1)
+        self._keys = list(GUIDE_CONTENT)
+        for key in self._keys:
+            self.pages.addItem(GUIDE_CONTENT[key][0])
+        self.pages.currentRowChanged.connect(self._show_page)
+        row = self._keys.index(initial) if initial in self._keys else 0
+        self.pages.setCurrentRow(row)
+
+    def _show_page(self, row):
+        if row < 0 or row >= len(self._keys):
+            return
+        title, intro, steps = GUIDE_CONTENT[self._keys[row]]
+        text = f"<h2>{title}</h2><p>{intro}</p><h3>怎么操作</h3><ol>"
+        text += "".join(f"<li>{step}</li>" for step in steps)
+        self.detail.setHtml(text + "</ol>")
 
 
 class Map3DWidget(QWidget):
@@ -1158,16 +1243,51 @@ class _MemRefineWorker(QThread):
             self.failed.emit(str(exc))
 
 
+def _find_map_data_dir(candidates):
+    """Reuse configured folders before scanning known game install locations."""
+    def resolve(directory):
+        if not directory:
+            return ""
+        directory = os.path.abspath(directory)
+        if os.path.isfile(os.path.join(directory, "level1")):
+            return directory
+        try:
+            for name in sorted(os.listdir(directory)):
+                path = os.path.join(directory, name)
+                if name.endswith("_Data") and os.path.isfile(os.path.join(path, "level1")):
+                    return path
+        except OSError:
+            pass
+        return ""
+
+    for directory in candidates:
+        result = resolve(directory)
+        if result:
+            return result
+    from _mods_page import _detect_game_roots
+    for directory in _detect_game_roots():
+        result = resolve(directory)
+        if result:
+            return result
+    return ""
+
+
 class _SceneLoadWorker(QThread):
     finished_ok = Signal(dict)
     failed = Signal(str)
 
-    def __init__(self, path):
+    def __init__(self, path=None, candidates=()):
         super().__init__()
         self.path = path
+        self.candidates = tuple(candidates)
 
     def run(self):
         try:
+            if not self.path:
+                directory = _find_map_data_dir(self.candidates)
+                if not directory:
+                    raise FileNotFoundError("未自动找到游戏场景，请启动游戏后重试，或在“地图设置”中选择游戏目录。")
+                self.path = os.path.join(directory, "level1")
             from unity_scene_loader import load_scene_cached
             from _unity_item_profiles import load_item_profiles
             cache_dir = os.path.join(QStandardPaths.writableLocation(QStandardPaths.CacheLocation), "unity_scene")
@@ -1266,6 +1386,13 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
         QDesktopServices.openUrl(QUrl("https://afdian.com/a/ctoy_p"))
         self.set_status("✅ 已为你打开赞助页，感谢支持！")
 
+    def _open_guide(self):
+        """Open the feature guide without changing the current editing page."""
+        current = getattr(self, "_last_page_row", 0)
+        key = self._nav_keys[current] if 0 <= current < len(self._nav_keys) else "home"
+        dialog = GuideDialog(self, key)
+        dialog.exec()
+
     def set_status(self, text):
         self.status_lbl.setText(text)
 
@@ -1289,6 +1416,8 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
         _fmenu.addAction("🆕 新建骨架").triggered.connect(self.new_save_skeleton)
         _fmenu.addSeparator()
         _fmenu.addAction("退出").triggered.connect(self.close)
+        self._help_menu = _mb.addMenu("帮助(&H)")
+        self._help_menu.addAction("新手指引").triggered.connect(self._open_guide)
 
         # ========== 左右布局 ==========
         # 左栏：导航菜单（标题 + 项 + 左下设置）
@@ -1401,7 +1530,8 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
         _social.addWidget(self._action_sponsor, 1)
         sb.addLayout(_social)
 
-        self.sidebar.setFixedWidth(212)
+        self.sidebar.setMinimumWidth(190)
+        self.sidebar.setMaximumWidth(250)
 
         # 右侧容器 = 上部按钮栏 + 内容栈
         right_outer = QWidget()
@@ -1445,7 +1575,11 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
                      self.tab_gamestats, self.tab_cat, self.tab_delivery, self.tab_airport,
                      self.tab_map3d, self.tab_memory, self.tab_story, self.tab_other,
                      self.tab_mods):
+            page.setObjectName("PageSurface")
             self.stack.addWidget(page)
+        self.tab_map3d.setObjectName("MapPage")
+        self.tab_memory.setObjectName("MemoryPage")
+        self.tab_mods.setObjectName("ModsPage")
         rv.addWidget(self.stack, 1)
 
         # 主布局：侧边栏 + 右侧（右侧拉伸填满）
@@ -1581,9 +1715,10 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
     def _page_header(self, layout, title, sub=""):
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         bar = QWidget()
+        bar.setObjectName("PageHeader")
         b = QVBoxLayout(bar)
-        b.setContentsMargins(4, 2, 4, 8)
-        b.setSpacing(2)
+        b.setContentsMargins(4, 2, 4, 7)
+        b.setSpacing(3)
         t = QLabel(title)
         t.setObjectName("PageTitle")
         b.addWidget(t)
@@ -1676,6 +1811,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
 
         # 文件操作卡片（2x3 网格）
         ops = [
+            ("新手指引", "查看每个功能页面的操作说明", self._open_guide),
             ("📂 打开存档", "选择本地 ES3/JSON 存档文件并加载", self.open_file),
             ("🔍 查找存档", "自动扫描游戏目录与程序目录的存档", self.find_save_file),
             ("💾 保存存档", "保存当前改动并自动生成备份", self.save_file),
@@ -1728,6 +1864,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
             ("difficulty", "🌡️ 游戏难度", "Difficulty", "1"),
         ]
         root = QWidget()
+        root.setObjectName("PageSurface")
         lay = QGridLayout(root)
         lay.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
         lay.setSpacing(SECTION_SPACING)
@@ -1743,8 +1880,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
 
         lay.setColumnStretch(0, 1)
         lay.setColumnStretch(1, 1)
-        for r in range(4):
-            lay.setRowStretch(r, 1)
+        lay.setRowStretch(4, 1)
 
         hint = QLabel("修改后点击【保存存档】写入文件。难度：0 简单 / 1 普通 / 2 困难 / 3 沙盒。")
         hint.setObjectName("Hint")
@@ -1806,10 +1942,10 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
     # 把根布局塞进 tab（保持结构清晰）
     def tab_basic_layout_add(self, root):
         outer = QVBoxLayout(self.tab_basic)
-        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setContentsMargins(PAGE_MARGIN, 10, PAGE_MARGIN, PAGE_MARGIN)
         outer.setSpacing(SECTION_SPACING)
         self._page_header(outer, "📊 基础数据", "货币、等级、经验、天数、电力、店铺名称等核心数值")
-        outer.addWidget(root)
+        outer.addWidget(root, 1)
 
     # ---------- 加密货币 ----------
     def build_crypto_tab(self):
@@ -1871,8 +2007,8 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
     def build_memory_tab(self):
         self.tab_memory.setObjectName("MemoryPage")
         lay = QVBoxLayout(self.tab_memory)
-        lay.setContentsMargins(PAGE_MARGIN, 12, PAGE_MARGIN, 10)
-        lay.setSpacing(10)
+        lay.setContentsMargins(PAGE_MARGIN, 10, PAGE_MARGIN, PAGE_MARGIN)
+        lay.setSpacing(9)
         title_bar = QHBoxLayout()
         title = QLabel("内存编辑")
         title.setObjectName("PageTitle")
@@ -2986,6 +3122,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
         menu = QMenu(self.map_options_btn)
         menu.addAction("刷新存档坐标", self.refresh_map3d)
         menu.addAction("重新加载游戏场景", self.load_game_scene)
+        menu.addAction("自动查找游戏目录", self.auto_find_map_directory)
         menu.addSeparator()
         menu.addAction("选择游戏目录…", self.choose_game_directory)
         self.map_options_btn.setMenu(menu)
@@ -3028,7 +3165,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
         bar.addWidget(self.map_floor_box)
         self.map_floor_prev = QPushButton("↓")
         self.map_floor_prev.setObjectName("Secondary")
-        self.map_floor_prev.setFixedWidth(34)
+        self.map_floor_prev.setFixedSize(30, 28)
         self.map_floor_prev.setEnabled(False)
         self.map_floor_prev.setAccessibleName("降低一层")
         self.map_floor_prev.setToolTip("降低一层（方向键 ↓）")
@@ -3039,7 +3176,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
         self.map_floor_label.hide()
         self.map_floor_next = QPushButton("↑")
         self.map_floor_next.setObjectName("Secondary")
-        self.map_floor_next.setFixedWidth(34)
+        self.map_floor_next.setFixedSize(30, 28)
         self.map_floor_next.setEnabled(False)
         self.map_floor_next.setAccessibleName("升高一层")
         self.map_floor_next.setToolTip("升高一层（方向键 ↑）")
@@ -3404,21 +3541,27 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
         self.map3d_info.setText(f"已绘制 {len(points)} 个坐标点（放置物品/物品/工人/污垢）")
 
     def load_game_scene(self):
-        data_dir = QSettings().value("map/game_data_dir", "") or r"F:\GameUnpack\UnderKingdom\Scam Center Simulator UnderKingdom_Data"
-        path = os.path.join(data_dir, "level1")
-        if not os.path.isfile(path):
-            self.map3d_info.setText("尚未选择游戏数据目录")
-            return
+        settings = QSettings()
+        candidates = [settings.value("map/game_data_dir", "") or "",
+                      settings.value("mods/game_dir", "") or ""]
+        self._start_map_scene_load(candidates)
+
+    def _start_map_scene_load(self, candidates):
         if getattr(self, "_scene_worker", None) and self._scene_worker.isRunning():
             return
-        self.map3d_info.setText("正在读取游戏场景的地面和墙体布局，请稍候……")
-        self._scene_worker = _SceneLoadWorker(path)
+        self.map3d_info.setText("正在自动查找游戏目录并读取地面和墙体布局，请稍候……")
+        self._scene_worker = _SceneLoadWorker(candidates=candidates)
         self._scene_worker.finished_ok.connect(self._on_scene_loaded)
         self._scene_worker.failed.connect(lambda msg: self.map3d_info.setText(f"场景解析失败：{msg}"))
         self._scene_worker.start()
 
+    def auto_find_map_directory(self):
+        # Explicit discovery can replace an outdated map installation setting.
+        self._start_map_scene_load([QSettings().value("mods/game_dir", "") or ""])
+
     def choose_game_directory(self):
-        current = QSettings().value("map/game_data_dir", "") or r"F:\GameUnpack\UnderKingdom"
+        settings = QSettings()
+        current = settings.value("map/game_data_dir", "") or settings.value("mods/game_dir", "") or ""
         directory = QFileDialog.getExistingDirectory(self, "选择游戏目录或游戏数据目录", current)
         if not directory:
             return
@@ -3434,6 +3577,9 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
         self.load_game_scene()
 
     def _on_scene_loaded(self, scene):
+        source = scene.get("source", "")
+        if source and os.path.isfile(source):
+            QSettings().setValue("map/game_data_dir", os.path.dirname(source))
         self.map3d_view.set_scene(scene)
         self._refresh_item_labels()
         self._populate_map_item_box()
@@ -4061,8 +4207,11 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
 
         self.worker_panel = QWidget()
         pv = QVBoxLayout(self.worker_panel)
+        pv.setContentsMargins(8, 0, 0, 0)
+        pv.setSpacing(10)
         self.worker_title = QLabel("👤 请选择一个工人")
         self.worker_title.setObjectName("CardTitle")
+        self.worker_title.setWordWrap(True)
         pv.addWidget(self.worker_title)
 
         # 属性网格
@@ -4131,19 +4280,27 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
 
         hint = QLabel("提示：修改数值自动保存到内存，最后点击顶部【保存存档】写入文件。")
         hint.setObjectName("Hint")
+        hint.setWordWrap(True)
         pv.addWidget(hint)
+        # Keep the form compact: extra window height belongs below the fields,
+        # rather than being distributed between every row and section.
+        pv.addStretch(1)
 
-        split.addWidget(self.worker_panel)
+        self.worker_scroll = QScrollArea()
+        self.worker_scroll.setWidgetResizable(True)
+        self.worker_scroll.setFrameShape(QFrame.NoFrame)
+        self.worker_scroll.setWidget(self.worker_panel)
+        split.addWidget(self.worker_scroll)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
         split.setSizes([280, 800])
-        v.addWidget(split)
+        v.addWidget(split, 1)
 
         outer = QVBoxLayout(self.tab_workers)
         outer.setContentsMargins(4, 4, 4, 4)
         outer.setSpacing(SECTION_SPACING)
         self._page_header(outer, "👷 工人", "逐个编辑工人的属性、职业、驯服与死亡状态")
-        outer.addWidget(root)
+        outer.addWidget(root, 1)
 
     # ==================== 日志 ====================
     def log(self, msg):

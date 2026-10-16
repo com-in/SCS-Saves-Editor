@@ -2,22 +2,24 @@
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QShortcut, QKeySequence
 from PySide6.QtWidgets import (QWidget, QLabel, QLineEdit, QPushButton, QFrame,
-    QHBoxLayout, QVBoxLayout, QGridLayout, QTableWidget, QScrollArea, QSizePolicy)
+    QHBoxLayout, QVBoxLayout, QGridLayout, QTableWidget, QScrollArea,
+    QSizePolicy, QComboBox)
 
 
 class EditorUiMixin:
     def setup_editor_ui(self):
         self.nav_search = QLineEdit()
-        self.nav_search.setPlaceholderText('搜索功能 / 英文键名')
+        self.nav_search.setPlaceholderText('搜索页面或字段')
         self.nav_search.setClearButtonEnabled(True)
         self.nav_search.textChanged.connect(self._filter_navigation)
         self._sb_layout.insertWidget(1, self.nav_search)
-        self.sidebar.setFixedWidth(230)
+        self.sidebar.setMinimumWidth(190)
+        self.sidebar.setMaximumWidth(250)
         toolbar = QFrame()
         toolbar.setObjectName('DocumentBar')
         layout = QHBoxLayout(toolbar)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(14, 8, 14, 8)
+        layout.setSpacing(8)
         self.file_label = QLabel('未打开存档')
         self.file_label.setObjectName('CardTitle')
         self.file_label.setMinimumWidth(100)
@@ -71,6 +73,15 @@ class EditorUiMixin:
             table.horizontalHeader().setMinimumSectionSize(32 if table is self.mem_target_table else 72)
             if table is not self.mem_target_table:
                 table.setMinimumHeight(140)
+        # Normalize the repeated page primitives after every page has built its
+        # own controls. This keeps legacy and newer pages visually consistent.
+        for button in self.findChildren(QPushButton):
+            if button.parentWidget() is not self.statusBar:
+                button.setMinimumHeight(max(button.minimumHeight(), 24))
+                if button.objectName() != "WelcomeCard":
+                    button.setMaximumHeight(28)
+        for combo in self.findChildren(QComboBox):
+            combo.setMinimumHeight(max(combo.minimumHeight(), 28))
         for label in self.findChildren(QLabel):
             if label.objectName() in ('Hint', 'PageSub'):
                 label.setWordWrap(True)

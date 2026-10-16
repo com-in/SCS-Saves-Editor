@@ -57,7 +57,10 @@ class UpdateMixin:
         self._update_download_reply = None
         self._pending_update = None
         self._update_manager = QNetworkAccessManager(self)
-        menu = self.menuBar().addMenu("帮助(&H)")
+        menu = getattr(self, "_help_menu", None)
+        if menu is None:
+            menu = self.menuBar().addMenu("帮助(&H)")
+            self._help_menu = menu
         version = menu.addAction(f"当前版本：v{APP_VERSION}")
         version.setEnabled(False)
         self._check_update_action = menu.addAction("检查更新…")

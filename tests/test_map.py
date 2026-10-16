@@ -1,6 +1,8 @@
 """Map projection and placement contracts independent of game assets."""
 import os
 import math
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -9,11 +11,56 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent, QWheelEvent
 
-from main import Map3DWidget
+from main import Map3DWidget, _find_map_data_dir, _SceneLoadWorker
 from unity_scene_loader import _rotate
 from _map_items import box_corners, heading, quaternion, rotate_world_y, yaw_rotation
 from _unity_item_profiles import transform_corners
 from _unity_item_profiles import _read_item_refs, _read_mayor_refs
+
+
+class SceneDiscoveryTests(unittest.TestCase):
+    def test_saved_map_and_mod_directories_skip_scanning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / 'Game_Data'
+            data.mkdir()
+            (data / 'level1').touch()
+            with patch('_mods_page._detect_game_roots') as detect:
+                self.assertEqual(_find_map_data_dir([str(data)]), str(data))
+                self.assertEqual(_find_map_data_dir([str(root / 'missing'), str(root)]), str(data))
+                detect.assert_not_called()
+
+    def test_scanning_skips_candidates_without_a_scene(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / 'Game_Data'
+            data.mkdir()
+            (data / 'level1').touch()
+            with patch('_mods_page._detect_game_roots', return_value=[str(root / 'missing'), str(root)]):
+                self.assertEqual(_find_map_data_dir(['']), str(data))
+
+    def test_worker_loads_discovered_scene_and_preserves_catalog(self):
+        worker = _SceneLoadWorker(candidates=['saved-folder'])
+        scenes, errors = [], []
+        worker.finished_ok.connect(scenes.append)
+        worker.failed.connect(errors.append)
+        with patch('main._find_map_data_dir', return_value='found'), \
+             patch('unity_scene_loader.load_scene_cached', return_value={'source': 'found/level1'}) as load, \
+             patch('_unity_item_profiles.load_item_profiles', return_value={'profiles': {}, 'definitions': {}}):
+            worker.run()
+        self.assertFalse(errors)
+        self.assertEqual(len(scenes), 1)
+        self.assertIn('item_definitions', scenes[0])
+        self.assertEqual(Path(load.call_args.args[0]), Path('found') / 'level1')
+
+    def test_missing_game_produces_actionable_message(self):
+        worker = _SceneLoadWorker()
+        errors = []
+        worker.failed.connect(errors.append)
+        with patch('main._find_map_data_dir', return_value=''):
+            worker.run()
+        self.assertEqual(len(errors), 1)
+        self.assertIn('选择游戏目录', errors[0])
 
 
 class SceneCatalogTests(unittest.TestCase):

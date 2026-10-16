@@ -12,6 +12,7 @@ from _mods_page import (
     _is_probably_root, _unity_backend, _human_size, _is_bepinex_package,
     _plugin_names_in_archive, _coerce_game_root, _looks_like_game_root,
     _detect_game_roots, _parse_vdf_paths, _direct_mod_url_info,
+    DEFAULT_MANIFEST_URL,
 )
 
 
@@ -35,6 +36,9 @@ def _write_zip(path, members):
 
 class ModPlanTests(unittest.TestCase):
     """Archive layout detection and destination mapping."""
+
+    def test_online_manifest_default_is_configured_url(self):
+        self.assertEqual(DEFAULT_MANIFEST_URL, "https://scsed.ctfun.top/mods_index.json")
 
     def test_bepinex_layout(self):
         plans = _plan_entry_map(["BepInEx/plugins/Foo/Foo.dll", "BepInEx/plugins/Foo/config.cfg"])
