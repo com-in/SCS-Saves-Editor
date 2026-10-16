@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import Qt, QSettings
-from PySide6.QtWidgets import QApplication, QMessageBox, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem
 from main import ES3Editor
 from _save_support import number, integer_list, atomic_write, validate_changes, prepare_es3_document
 
@@ -152,6 +152,22 @@ class EditorTests(unittest.TestCase):
         self.dialog_guard.start()
         self.addCleanup(self.dialog_guard.stop)
         self.w = self.load(fixture())
+
+    def test_mods_page_is_usable_without_an_open_save(self):
+        # The mod installer only touches the game directory, so its page must
+        # stay enabled when no save is loaded, unlike the save-editing pages.
+        window = self.window
+        window.data = None
+        window.file_path = None
+        window._refresh_document_state()
+        self.assertTrue(window.tab_mods.isEnabled())
+        buttons = [button for button in window.tab_mods.findChildren(QPushButton)
+                   if button.text() in ('选择…', '自动查找')]
+        self.assertEqual(len(buttons), 2)
+        self.assertTrue(all(button.isEnabled() for button in buttons))
+        self.assertFalse(window.tab_basic.isEnabled())
+        # Restore the loaded fixture so later tests start from a save.
+        self.load(fixture())
 
     def test_fixture_roundtrip_preserves_every_field(self):
         self.assertEqual(self.w.collect_document(), fixture())

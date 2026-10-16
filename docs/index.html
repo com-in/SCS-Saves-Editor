@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="SCS 存档修改器：编辑诈骗园区模拟器 ES3 存档、管理工人与设施、可视化调整地图，以及安装和管理 Mod。">
+  <title>SCS 存档修改器 · 功能介绍与 Mod 清单</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, "Microsoft YaHei", sans-serif; }
+    body { margin: 0; background: #11151d; color: #e6ebf5; line-height: 1.7; }
+    main { max-width: 760px; margin: 10vh auto; padding: 24px; }
+    .eyebrow { color: #94adc9; font-size: 13px; letter-spacing: .12em; }
+    h1 { font-size: clamp(30px, 6vw, 44px); margin: 10px 0; }
+    p { color: #aebcd0; }
+    section { margin: 28px 0; padding: 24px; background: #1a2230; border: 1px solid #354155; border-radius: 16px; }
+    label { display: block; margin-bottom: 10px; font-weight: 600; }
+    .address { display: flex; flex-wrap: wrap; gap: 10px; }
+    input { flex: 1; min-width: 180px; padding: 12px; background: #11151d; color: #e6ebf5; border: 1px solid #526079; border-radius: 8px; font: inherit; }
+    button, .primary { display: inline-block; padding: 12px 18px; background: #9bd7ca; color: #102820; border: 0; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer; text-decoration: none; }
+    a { color: #9bd7ca; }
+    .links { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; margin-top: 20px; }
+    #feedback { min-height: 1.7em; margin: 10px 0 0; }
+    * { box-sizing: border-box; }
+    :root { color-scheme: dark; }
+    html { scroll-behavior: smooth; }
+    body { background: #101c19; color: #f1f3e8; }
+    main { max-width: 1080px; margin: 0 auto; padding: 0 28px; }
+    p { color: #a9bcb1; }
+    nav { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding: 24px 0; border-bottom: 1px solid #33463c; }
+    nav a { text-decoration: none; font-size: 14px; }
+    nav .links { margin: 0; gap: 20px; }
+    .brand { font-weight: 750; letter-spacing: .06em; }
+    .hero { display: grid; grid-template-columns: 1.4fr 1fr; align-items: center; gap: 48px; padding: 80px 0; }
+    .eyebrow { color: #caed91; font-size: 12px; font-weight: 700; letter-spacing: .15em; }
+    h1 { font-size: clamp(38px, 5.5vw, 62px); line-height: 1.22; letter-spacing: -.04em; margin: 20px 0; }
+    h1 span { color: #caed91; }
+    .lead { font-size: 17px; }
+    .primary, button { background: #caed91; color: #101c19; }
+    a { color: #caed91; text-underline-offset: 4px; }
+    a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid #caed91; outline-offset: 4px; }
+    .overview, .card, .manifest { border: 1px solid #33463c; border-radius: 12px; background: #182823; padding: 24px; }
+    .overview div + div { border-top: 1px solid #33463c; margin-top: 18px; padding-top: 18px; }
+    .overview strong { display: block; font-size: 19px; }
+    .overview small { color: #a9bcb1; }
+    section { background: transparent; border: 0; border-top: 1px solid #33463c; border-radius: 0; margin: 0; padding: 48px 0; }
+    h2 { font-size: 28px; margin: 6px 0 24px; line-height: 1.4; }
+    h3 { font-size: 18px; margin: 10px 0; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .card p { font-size: 14px; }
+    .number { color: #caed91; font-size: 12px; letter-spacing: .08em; }
+    .note { font-size: 13px; margin-top: 20px; }
+    .steps { list-style: none; padding: 0; margin: 0; }
+    .address input { min-width: 0; background: #101c19; border-color: #526850; }
+    footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; border-top: 1px solid #33463c; padding: 24px 0 36px; color: #a9bcb1; font-size: 12px; }
+    @media (max-width: 760px) { main { padding: 0 20px; } .hero { grid-template-columns: 1fr; gap: 28px; padding: 44px 0; } .grid { grid-template-columns: 1fr; } .address { flex-direction: column; } section { padding: 32px 0; } }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <main>
+    <nav aria-label="主导航"><a class="brand" href="./">SCS / 存档修改器</a><div class="links"><a href="#features">功能介绍</a><a href="#start">使用步骤</a><a href="#mods">Mod 清单</a></div></nav>
+    <header class="hero">
+      <div>
+        <div class="eyebrow">SCAM CENTER SIMULATOR · SAVE EDITOR</div>
+        <h1>你的园区，<br><span>由你调整。</span></h1>
+        <p class="lead">为《诈骗园区模拟器》打造的 ES3 存档修改器。从基础数值、工人管理到地图设施布局，在一个桌面工具里完成编辑，也能安装和管理 Mod。</p>
+        <div class="links"><a id="accelerated-download" class="primary" href="https://gh-proxy.org/https://github.com/com-in/SCS-Saves-Editor/releases/download/v1.3.0/SCS.exe">加速下载（国内） ↓</a><a href="https://github.com/com-in/SCS-Saves-Editor/releases">GitHub 下载 ↗</a><a href="https://github.com/com-in/SCS-Saves-Editor">查看开源项目</a></div>
+        <p class="note">Windows 桌面工具 · Python + PySide6 · GPL-3.0 开源</p>
+      </div>
+      <aside class="overview" aria-label="工具能力概览">
+        <div><strong>编辑存档</strong><small>数值、工人、物品与成长进度</small></div>
+        <div><strong>调整地图</strong><small>按楼层查看、放置、移动与旋转设施</small></div>
+        <div><strong>管理 Mod</strong><small>本地导入、文件直链与在线清单</small></div>
+      </aside>
+    </header>
+    <section id="features" aria-labelledby="features-title">
+      <div class="eyebrow">FEATURES</div><h2 id="features-title">从数据到布局，都能照顾到。</h2>
+      <div class="grid">
+        <article class="card"><span class="number">01 / 存档编辑</span><h3>常用数据集中管理</h3><p>修改货币、等级、经验、电力等基础数据，管理工人能力和状态，查看物品、升级及其他存档字段。</p></article>
+        <article class="card"><span class="number">02 / 可视化地图</span><h3>直接调整园区设施</h3><p>读取游戏场景，按楼层查看设施位置；放置物品、拖动移动、调整朝向，完成后保存到存档。</p></article>
+        <article class="card"><span class="number">03 / Mod 管理</span><h3>多种方式导入插件</h3><p>安装 BepInEx 加载器，通过本地 ZIP / DLL、文件直链或在线清单安装 Mod，并管理启用、禁用和卸载。</p></article>
+      </div>
+      <p class="note">保存前自动备份到存档同目录的 ES3_Backups 文件夹。地图是碰撞体提取的简化布局；编辑后需点击「保存存档」才会写入。</p>
+    </section>
+    <section id="start" aria-labelledby="start-title">
+      <div class="eyebrow">GET STARTED</div><h2 id="start-title">开始使用，只需几步。</h2>
+      <ol class="steps grid">
+        <li class="card"><span class="number">01</span><h3>下载并启动</h3><p>前往项目 Releases 下载 Windows 程序。首次使用时，先保留一份自己的原始存档副本。</p></li>
+        <li class="card"><span class="number">02</span><h3>选择工作内容</h3><p>编辑数据时打开 .es3 存档；使用地图时选择游戏目录。安装 Mod 可直接打开对应页面，无需先加载存档。</p></li>
+        <li class="card"><span class="number">03</span><h3>确认并应用</h3><p>存档编辑完成后点击保存。安装 Mod 前先退出游戏，选择游戏目录并检查 BepInEx 加载器状态。</p></li>
+      </ol>
+    </section>
+    <section id="mods" aria-labelledby="mods-title">
+      <div class="eyebrow">MOD DIRECTORY</div><h2 id="mods-title">把在线清单接入修改器。</h2>
+      <p>复制下方地址，粘贴到「安装 Mod → 在线 Mod 清单」，点击「刷新」，再选择需要的 Mod 安装。</p>
+      <div class="manifest">
+      <label for="manifest-url">JSON 清单地址</label>
+      <div class="address">
+        <input id="manifest-url" readonly aria-label="JSON 清单地址">
+        <button id="copy" type="button">复制地址</button>
+      </div>
+      <p id="feedback" role="status"></p>
+      <div class="links">
+        <a class="primary" href="./mods_index.json">查看正式清单</a>
+        <a href="./mods_index.example.json">查看 JSON 示例</a>
+        <a href="https://github.com/com-in/SCS-Saves-Editor">项目仓库</a>
+      </div>
+      </div>
+      <p class="note">已有 ZIP / DLL 文件直链时，可直接粘贴到「文件直链」安装，无需制作清单。第三方 Mod 请先确认来源和游戏版本兼容性。</p>
+    </section>
+    <footer><span>SCS Saves Editor · com-in</span><span><a href="https://github.com/com-in/SCS-Saves-Editor/issues">反馈问题</a> · <a href="https://github.com/com-in/SCS-Saves-Editor/blob/main/LICENSE">开源许可</a></span></footer>
+  </main>
+  <script>
+    const field = document.getElementById('manifest-url');
+    field.value = new URL('./mods_index.json', window.location.href).href;
+    document.getElementById('copy').addEventListener('click', async () => {
+      const feedback = document.getElementById('feedback');
+      try {
+        await navigator.clipboard.writeText(field.value);
+        feedback.textContent = '已复制，可粘贴到修改器中。';
+      } catch {
+        field.focus();
+        field.select();
+        feedback.textContent = '请按 Ctrl+C 或使用系统复制操作。';
+      }
+    });
+  </script>
+</body>
+</html>

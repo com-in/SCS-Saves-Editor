@@ -65,7 +65,8 @@ class DocumentMixin:
         self.save_as_button.setEnabled(loaded)
         self.check_button.setEnabled(loaded)
         for row, page in enumerate(self.nav_items):
-            if page[2] not in ('home', 'memory', 'map3d'):
+            # Mod 页只操作游戏目录（BepInEx/插件），与存档无关，未开档也可用
+            if page[2] not in ('home', 'memory', 'map3d', 'mods'):
                 self.stack.widget(row).setEnabled(loaded)
         for key, label in self.overview_values.items():
             value = self.es3_get(key)
@@ -185,11 +186,19 @@ class DocumentMixin:
         return self._write_document(path, switch=False) if path else False
 
     def closeEvent(self, event):
+        if getattr(self, '_update_download_reply', None) is not None:
+            self.set_status('正在下载更新，请先在下载窗口取消或等待下载完成')
+            event.ignore()
+            return
         worker = getattr(self, '_mem_worker', None)
         if worker is not None and worker.isRunning():
             self.set_status('请等待当前内存扫描结束后退出')
             event.ignore()
         elif self._confirm_discard():
+            launch_update = getattr(self, '_launch_pending_update', None)
+            if launch_update is not None and not launch_update():
+                event.ignore()
+                return
             from PySide6.QtCore import QSettings
             QSettings().setValue('ui/geometry', self.saveGeometry())
             event.accept()

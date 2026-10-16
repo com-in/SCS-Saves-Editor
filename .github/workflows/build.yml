@@ -27,11 +27,17 @@ jobs:
           pip install -r requirements.txt
 
       - name: 用 PyInstaller 打包（含 icon.ico）
+        # Embed the tag so released executables compare against their own version.
+        env:
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
         run: |
+          python .github/scripts/stamp-version.py
           pyinstaller --noconfirm --clean --onefile --windowed `
-            --name "SCS存档修改器" `
+            --name "SCS" `
             --icon "icon.ico" `
             --add-data "icon.ico;." `
+            --add-data "docs/mods_index.json;docs" `
             --hidden-import numpy `
             --hidden-import numpy.core `
             --collect-all numpy `
@@ -44,11 +50,22 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SCS存档修改器
-          path: dist/SCS存档修改器.exe
+          path: dist/SCS.exe
 
       - name: 创建 GitHub Release（仅标签推送时）
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/SCS存档修改器.exe
+          files: dist/SCS.exe
           generate_release_notes: true
+
+  update-download:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    uses: ./.github/workflows/update-download.yml
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    with:
+      release_tag: ${{ github.ref_name }}

@@ -1,0 +1,14 @@
+{
+  "name": "SCS Mod Index (sample)",
+  "mods": [
+    {
+      "id": "sample-mod",
+      "name": "示例 Mod（请替换）",
+      "version": "1.0.0",
+      "author": "unknown",
+      "description": "这是一个占位条目。请把 download 换成你的 zip/dll 直链后使用，或直接删除整份示例。",
+      "download": "",
+      "homepage": ""
+    }
+  ]
+}

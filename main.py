@@ -45,6 +45,8 @@ from _item_data import USER_ITEM_NAME as _ITEM_NAME  # 物品 id->中文名 映�
 from _item_labels import item_label, item_sort_key
 from _search_combo import SearchComboBox
 from _extra_pages import ExtraPagesMixin
+from _mods_page import ModsPageMixin
+from _updates import UpdateMixin
 from _document import DocumentMixin
 from _editor_ui import EditorUiMixin
 from _save_support import number, integer_list, validate_document, validate_changes, atomic_write
@@ -116,6 +118,14 @@ QLabel {{ background: transparent; }}
 QLabel#CardTitle {{ color: {T}; font-weight: bold; font-size: 14px; }}
 QLabel#Hint {{ color: {W}; font-size: 12px; }}
 QLabel#PageTitle {{ color: {T}; font-size: 20px; font-weight: bold; }}
+QLabel#ModsScopeBadge {{
+    color: {ACC}; background: {ENTRY}; border: 1px solid {ACC};
+    border-radius: 10px; padding: 4px 10px; font-size: 12px; font-weight: bold;
+}}
+QLabel#ModsSectionCaption {{ color: {TS}; font-size: 12px; }}
+QLabel#ModsFieldLabel {{ color: {TS}; font-size: 12px; font-weight: bold; min-width: 34px; }}
+QLabel#ModsProgressTitle {{ color: {T}; font-size: 12px; font-weight: bold; }}
+QFrame#ModsProgressBox {{ background: {CARD}; border: 1px solid {BD}; border-radius: 8px; }}
 QLabel#PageSub {{ color: {TS}; font-size: 12px; }}
 QLabel#Muted {{ color: {TS}; font-size: 12px; }}
 QLabel#SideTitle {{ color: {T}; font-weight: bold; font-size: 15px; }}
@@ -139,6 +149,7 @@ QPushButton:disabled {{ background: {BD}; color: {TS}; }}
 QPushButton#Danger {{ background: {D}; }}
 QPushButton#Ghost {{ background: {CARD}; color: {T}; border: 1px solid {BD}; }}
 QPushButton#Ghost:hover {{ border: 1px solid {ACC}; }}
+QStatusBar QPushButton#Ghost {{ padding: 2px 10px; }}
 QPushButton#WelcomeCard {{
     background: {CARD}; color: {T}; border: 1px solid {BD};
     border-radius: 12px; padding: 16px 18px; font-weight: bold;
@@ -184,12 +195,12 @@ QLabel#PanelTitle {{ color: {T}; font-size: 13px; font-weight: bold; }}
 QLabel#EmptyTitle {{ color: {TS}; font-size: 15px; font-weight: bold; }}
 QLabel#StatusChip {{ background: {BG}; color: {TS}; border: 1px solid {BD}; border-radius: 6px; padding: 4px 8px; }}
 QLabel#StatusChip[active="true"] {{ color: {ACC}; border-color: {ACC}; }}
-QWidget#MapPage QPushButton, QWidget#MemoryPage QPushButton {{ padding: 7px 12px; }}
+QWidget#MapPage QPushButton, QWidget#MemoryPage QPushButton, QWidget#ModsPage QPushButton {{ padding: 7px 12px; }}
 QPushButton#Secondary {{ background: {ENTRY}; color: {T}; border: 1px solid {BD}; }}
 QPushButton#Secondary:hover {{ border-color: {ACC}; color: {ACC}; }}
 QPushButton#ModeButton {{ background: {CARD}; color: {ACC}; border: 1px solid {ACC}; }}
 QPushButton#ModeButton:checked, QPushButton#Secondary:checked {{ background: {ACC}; color: {BG}; }}
-QWidget#MapPage QPushButton:disabled, QWidget#MemoryPage QPushButton:disabled {{
+QWidget#MapPage QPushButton:disabled, QWidget#MemoryPage QPushButton:disabled, QWidget#ModsPage QPushButton:disabled {{
     background: {BG}; color: {TS}; border: 1px solid {BD};
 }}
 QWidget#MemoryPage QPushButton#Ghost:checked {{ background: {ACC}; color: {BG}; border-color: {ACC}; }}
@@ -206,6 +217,10 @@ QTreeWidget#MemoryResults {{
 QTreeWidget#MemoryResults::item {{ padding: 3px 0; }}
 QProgressBar {{ border: none; border-radius: 3px; background: {BG}; max-height: 6px; }}
 QProgressBar::chunk {{ background: {ACC}; border-radius: 3px; }}
+QProgressBar#ModsTaskProgress {{
+    min-height: 24px; max-height: 32px; border: 1px solid {BD};
+    background: {ENTRY}; color: {T}; text-align: center; border-radius: 4px;
+}}
 
 QTableWidget {{
     background: {ENTRY}; border: 1px solid {BD}; border-radius: 6px;
@@ -1169,9 +1184,18 @@ class _SceneLoadWorker(QThread):
             self.failed.emit(str(exc))
 
 
-class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
+class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, UpdateMixin, QMainWindow):
     def __init__(self):
         super().__init__()
+        # QSettings() relies on the application identity.  Without these
+        # values, settings such as mods/game_dir may not be readable again
+        # after being written, causing the Mod page to clear a selected path.
+        app = QApplication.instance()
+        if app is not None:
+            if not app.organizationName():
+                app.setOrganizationName("com-in")
+            if not app.applicationName():
+                app.setApplicationName("SCS-Saves-Editor")
         self.setWindowTitle("诈骗园区模拟器 - 存档修改器")
         self.setMinimumSize(1000, 700)
 
@@ -1200,6 +1224,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
 
         self._loading = True
         self.build_ui()
+        self.setup_updates()
         self._loading = False
         self.setup_editor_ui()
         self.log("程序已启动，请先打开 .es3 存档文件")
@@ -1309,6 +1334,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
             ("🔬", "内存 BYCT", "memory"),
             ("🔓", "解锁管理", "unlock"),
             ("⚙️", "其他", "other"),
+            ("🧩", "安装 Mod", "mods"),
         ]
         self._nav_icons = [it[0] for it in self.nav_items]
         self._nav_labels = [it[1] for it in self.nav_items]
@@ -1320,7 +1346,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
             ("🎮 游戏", ["growth", "purchase", "municipal", "interior",
                         "bodyguard", "tutorial", "schedule", "gamestats",
                         "cat", "delivery", "airport"]),
-            ("🔧 工具", ["map3d", "memory", "unlock", "other"]),
+            ("🔧 工具", ["map3d", "memory", "unlock", "other", "mods"]),
         ]
         self._nav_leaves = []          # 叶子项，顺序 == stack 页索引
         self._nav_group_items = []     # 分组头项
@@ -1409,6 +1435,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         self.tab_memory = QWidget()
         self.tab_story = QWidget()   # 合并页：银行还款 / 剧情解锁 / 教程解锁
         self.tab_other = QWidget()
+        self.tab_mods = QWidget()    # Mod 安装：BepInEx 加载器与插件管理
 
         for page in (self.tab_welcome, self.tab_basic, self.tab_workers, self.tab_crypto,
                      self.tab_items, self.tab_placed, self.tab_upgrade,
@@ -1416,7 +1443,8 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
                      self.tab_interior,
                      self.tab_bodyguard, self.tab_tutorial, self.tab_schedule,
                      self.tab_gamestats, self.tab_cat, self.tab_delivery, self.tab_airport,
-                     self.tab_map3d, self.tab_memory, self.tab_story, self.tab_other):
+                     self.tab_map3d, self.tab_memory, self.tab_story, self.tab_other,
+                     self.tab_mods):
             self.stack.addWidget(page)
         rv.addWidget(self.stack, 1)
 
@@ -1442,12 +1470,14 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, QMainWindow):
         self.build_debt_story_tutorial_tabs()  # 银行债务/剧情解锁/教程解锁
         self.build_extra_tabs()  # 新增解包项：成长/采购/市政/装修/其他数据
         self.build_welcome_tab()  # 首页：欢迎页 + 文件操作
+        self.build_mods_tab()     # Mod 安装：加载器检测/本地与在线安装/启停卸载
 
         self.statusBar = QStatusBar()
         self.setStatusBar(self.statusBar)
         self.status_lbl = QLabel("未加载文件")
         self.status_lbl.setObjectName("Muted")
         self.statusBar.addWidget(self.status_lbl)
+        self._mods_attach_progress_to_statusbar()
 
         # 应用初始主题（即时，无动画）
         self.apply_theme(self.theme, immediate=True)
@@ -4951,6 +4981,8 @@ def main():
     import sys
     import os
     app = QApplication(sys.argv)
+    app.setOrganizationName("com-in")
+    app.setApplicationName("SCS-Saves-Editor")
     app.setStyleSheet(build_qss(LIGHT_THEME))
     app.setFont(QFont("Microsoft YaHei UI", 10))
 
@@ -4965,6 +4997,7 @@ def main():
         win = ES3Editor()
 
     win.show()
+    QTimer.singleShot(2000, win.check_updates)
     sys.exit(app.exec())
 
 

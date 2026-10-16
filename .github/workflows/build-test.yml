@@ -29,7 +29,7 @@ jobs:
       - name: 用 PyInstaller 打包（含 icon.ico）
         run: |
           pyinstaller --noconfirm --clean --onefile --windowed `
-            --name "SCS存档修改器" `
+            --name "SCS" `
             --icon "icon.ico" `
             --add-data "icon.ico;." `
             --hidden-import numpy `
@@ -43,4 +43,4 @@ jobs:
       # 产物仅保留在构建环境中，不上传、不发布、不进 Release
       - name: 校验打包产物存在
         run: |
-          Test-Path "dist/SCS存档修改器.exe"
+          Test-Path "dist/SCS.exe"
