@@ -51,6 +51,8 @@ jobs:
             const path = 'docs/index.html';
             const html = fs.readFileSync(path, 'utf8');
             fs.writeFileSync(path, updateDownload(html, release, `${context.repo.owner}/${context.repo.repo}`));
+            if (!/^v\d+\.\d+\.\d+$/.test(release.tag_name)) throw new Error('Release 标签必须是 vX.Y.Z。');
+            fs.writeFileSync('docs/version.html', `${release.tag_name}\n`, 'utf8');
             core.info(`已更新到 ${release.tag_name}`);
       - name: 提交首页更新
         id: commit
@@ -58,9 +60,9 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if ! git diff --quiet -- docs/index.html; then
-            git add docs/index.html
-            git commit -m 'docs: update accelerated release download'
+          git add docs/index.html docs/version.html
+          if ! git diff --cached --quiet; then
+            git commit -m 'docs: update release version and download link'
             git push origin HEAD
           fi
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"

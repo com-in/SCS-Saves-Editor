@@ -7,7 +7,7 @@ import struct
 import tempfile
 from unittest import mock
 
-from _updates import REPOSITORY, UpdateMixin, release_update, version_tuple
+from _updates import REPOSITORY, UpdateMixin, release_update, version_tuple, version_page_tag, VERSION_URL
 from _self_update import validate_download, prepare_update_bat
 
 
@@ -19,6 +19,14 @@ def release(tag="v1.4.0"):
 
 
 class UpdateTests(unittest.TestCase):
+    def test_version_page_contains_only_a_plain_or_html_wrapped_version(self):
+        self.assertEqual(VERSION_URL, "https://scsed.ctfun.top/version.html")
+        self.assertEqual(version_page_tag("1.3.4\n"), "v1.3.4")
+        self.assertEqual(version_page_tag("<html><body>v1.10.2</body></html>"), "v1.10.2")
+        for invalid in ("", "latest", "version 1.3.4", "1.3.4\n1.3.5", "1.3"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                version_page_tag(invalid)
+
     def test_pending_update_does_not_launch_while_mod_task_runs(self):
         host = mock.Mock()
         host._pending_update = ("apply-update.bat", "SCS.exe.bak")

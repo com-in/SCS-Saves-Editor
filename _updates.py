@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+from urllib.parse import quote
 
 from PySide6.QtCore import QSettings, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
@@ -16,7 +17,8 @@ from _version import APP_VERSION
 from _self_update import validate_download, prepare_update_bat, launch_update_bat
 
 REPOSITORY = "com-in/SCS-Saves-Editor"
-RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
+VERSION_URL = "https://scsed.ctfun.top/version.html"
+RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases/tags/"
 
 
 def version_tuple(value):
@@ -24,6 +26,17 @@ def version_tuple(value):
     if not match:
         raise ValueError("无法识别版本号：" + str(value))
     return tuple(int(part) for part in match.groups())
+
+
+def version_page_tag(body):
+    """Read a single semantic version from the published version.html page."""
+    text = re.sub(r"<[^>]*>", " ", str(body))
+    match = re.search(r"(?<![\w.])v?\d+\.\d+\.\d+(?![\w.])", text, re.IGNORECASE)
+    if not match or text[:match.start()].strip() or text[match.end():].strip():
+        raise ValueError("版本页面内容无效，应只包含一个版本号。")
+    value = match.group(0)
+    version_tuple(value)
+    return "v" + value.lstrip("vV")
 
 
 def release_update(data, current=APP_VERSION):
@@ -75,9 +88,9 @@ class UpdateMixin:
             return
         if self._update_reply is not None or self._update_download_reply is not None:
             return
-        request = QNetworkRequest(QUrl(RELEASE_API))
+        request = QNetworkRequest(QUrl(VERSION_URL))
         request.setRawHeader(b"User-Agent", f"SCS-Saves-Editor/{APP_VERSION}".encode("ascii"))
-        request.setRawHeader(b"Accept", b"application/vnd.github+json")
+        request.setRawHeader(b"Cache-Control", b"no-cache")
         request.setTransferTimeout(15000)
         self._check_update_action.setEnabled(False)
         self._check_update_action.setText("正在检查更新…")
@@ -87,18 +100,50 @@ class UpdateMixin:
 
     def _update_finished(self, reply, manual):
         self._update_reply = None
-        self._check_update_action.setEnabled(True)
-        self._check_update_action.setText("检查更新…")
         try:
             if reply.error() != QNetworkReply.NoError:
                 raise ValueError(reply.errorString())
-            update = release_update(json.loads(bytes(reply.readAll()).decode("utf-8")))
+            tag = version_page_tag(bytes(reply.readAll()).decode("utf-8"))
         except Exception as exc:
+            self._finish_update_check_ui()
             if manual:
-                QMessageBox.warning(self, "检查更新失败", f"无法获取版本信息，请稍后重试。\n\n{exc}")
+                QMessageBox.warning(self, "检查更新失败", f"无法读取版本页面，请稍后重试。\n\n{exc}")
             return
         finally:
             reply.deleteLater()
+        if version_tuple(tag) <= version_tuple(APP_VERSION):
+            self._finish_update_check_ui()
+            if manual:
+                QMessageBox.information(self, "检查更新", f"当前已是最新正式版本（v{APP_VERSION}）。")
+            return
+        request = QNetworkRequest(QUrl(RELEASE_API + quote(tag, safe="")))
+        request.setRawHeader(b"User-Agent", f"SCS-Saves-Editor/{APP_VERSION}".encode("ascii"))
+        request.setRawHeader(b"Accept", b"application/vnd.github+json")
+        request.setTransferTimeout(15000)
+        release_reply = self._update_manager.get(request)
+        self._update_reply = release_reply
+        release_reply.finished.connect(lambda: self._release_info_finished(release_reply, manual, tag))
+
+    def _finish_update_check_ui(self):
+        self._check_update_action.setEnabled(True)
+        self._check_update_action.setText("检查更新…")
+
+    def _release_info_finished(self, reply, manual, expected_tag):
+        self._update_reply = None
+        self._finish_update_check_ui()
+        try:
+            if reply.error() != QNetworkReply.NoError:
+                raise ValueError(reply.errorString())
+            data = json.loads(bytes(reply.readAll()).decode("utf-8"))
+            if str(data.get("tag_name", "")) != expected_tag:
+                raise ValueError("Release 版本与 version.html 不一致。")
+            update = release_update(data)
+        except Exception as exc:
+            if manual:
+                QMessageBox.warning(self, "检查更新失败", f"无法获取该版本的下载信息，请稍后重试。\n\n{exc}")
+            reply.deleteLater()
+            return
+        reply.deleteLater()
         if update is None:
             if manual:
                 QMessageBox.information(self, "检查更新", f"当前已是最新正式版本（v{APP_VERSION}）。")
