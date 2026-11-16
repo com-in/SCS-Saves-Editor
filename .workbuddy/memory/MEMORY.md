@@ -5,6 +5,20 @@
 《诈骗园区模拟器》(Scam Center Simulator / UnderKingdom) 的 Unity ES3 存档修改器。
 Python + PySide6，单文件 GUI 入口 `main.py` + 多个 `_xxx.py` 混入类（Mixin）模块。
 
+- **代码位置：`F:\Projects\SCS Saves Edit`**（2026-11 起从 E 盘迁到 F 盘；E 盘同名目录可能为空或临时克隆，勿以它为准）。
+- 远端：`https://github.com/com-in/SCS-Saves-Editor.git`，默认分支 `main`。
+
+## 发布流程
+
+- 版本号在 `_version.py` 的 `APP_VERSION`；发布 tag 必须形如 `vX.Y.Z`。
+- 推 `main` → 触发「构建测试」；推 tag `vX.Y.Z` → 触发「打包发布」：CI 用 tag 覆盖
+  `_version.py`、PyInstaller 打包 `dist/SCS.exe`、建 Release、再跑「更新首页下载与 Pages」。
+- 该 Pages 流程会自动提交 `docs/index.html`（加速下载直链）与 `docs/version.html`（应用内检查更新读取）。
+- 已知 CI 现象：`update-download` 的 `deploy` 子任务在 job 级失败（0 step、约 2 秒），因为仓库
+  Pages Source 是「Deploy from a branch」而工作流走 `actions/deploy-pages`；实际部署由 GitHub 自带的
+  `pages build and deployment` 完成，站点仍会更新。v1.3.4 起每次发布都是这个状态。
+
+
 ## 架构约定
 
 - `main.py` 中的 `ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, QMainWindow)`
