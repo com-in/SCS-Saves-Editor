@@ -409,6 +409,7 @@ GUIDE_CONTENT = {
     "gamestats": ("成就统计", "查看和修改游戏统计数据。", ["统计名称为中文显示，保存仍使用原始字段。"]),
     "cat": ("宠物猫", "编辑领养、猫咪编号和喂养记录。", ["修改输入框后保存。", "列表字段使用逗号分隔。"]),
     "delivery": ("配送点", "切换已解锁的配送位置。", ["从下拉框选择目标配送点。"]),
+    "tournament": ("锦标赛", "编辑比赛进度和参赛者。", ["可调整解锁等级、通关等级、当前轮次和生命值。", "参赛者属性在表格中编辑；签表按 8、4、2、1 顺序排列。", "等级和轮次使用从 0 开始的游戏编号，未通关为 -1。"]),
     "airport": ("机场队列", "编辑机场 NPC 队列。", ["表格支持逐项修改和行操作。"]),
     "map3d": ("游戏地图", "在真实游戏场景轮廓上查看和调整物品。", ["打开存档后程序会自动查找游戏目录并加载场景。", "中键平移、滚轮缩放，左键拖动物品；Q/E 旋转。", "在“地图设置”中可重新加载、自动查找或选择游戏目录。"]),
     "memory": ("内存扫描", "扫描运行中的游戏进程并定位动态数值。", ["先启动游戏并选择存档，再检测进程。", "选择目标后首次扫描；回到游戏改变数值，再筛选候选。", "只写入勾选的地址，使用前请备份存档。"]),
@@ -1459,6 +1460,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
             ("🐱", "宠物猫", "cat"),
             ("🚚", "配送点", "delivery"),
             ("✈️", "机场队列", "airport"),
+            ("🏆", "锦标赛", "tournament"),
             ("🌐", "游戏地图", "map3d"),
             ("🔬", "内存 BYCT", "memory"),
             ("🔓", "解锁管理", "unlock"),
@@ -1474,7 +1476,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
             ("🏠 档案", ["basic", "workers", "crypto", "items", "placed", "upgrade"]),
             ("🎮 游戏", ["growth", "purchase", "municipal", "interior",
                         "bodyguard", "tutorial", "schedule", "gamestats",
-                        "cat", "delivery", "airport"]),
+                        "cat", "delivery", "airport", "tournament"]),
             ("🔧 工具", ["map3d", "memory", "unlock", "other", "mods"]),
         ]
         self._nav_leaves = []          # 叶子项，顺序 == stack 页索引
@@ -1561,6 +1563,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
         self.tab_cat = QWidget()
         self.tab_delivery = QWidget()
         self.tab_airport = QWidget()
+        self.tab_tournament = QWidget()
         self.tab_map3d = QWidget()
         self.tab_memory = QWidget()
         self.tab_story = QWidget()   # 合并页：银行还款 / 剧情解锁 / 教程解锁
@@ -1572,7 +1575,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
                      self.tab_growth, self.tab_purchase, self.tab_municipal,
                      self.tab_interior,
                      self.tab_bodyguard, self.tab_tutorial, self.tab_schedule,
-                     self.tab_gamestats, self.tab_cat, self.tab_delivery, self.tab_airport,
+                     self.tab_gamestats, self.tab_cat, self.tab_delivery, self.tab_airport, self.tab_tournament,
                      self.tab_map3d, self.tab_memory, self.tab_story, self.tab_other,
                      self.tab_mods):
             page.setObjectName("PageSurface")
@@ -4312,6 +4315,9 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
         d = self.data
         if not isinstance(d, dict):
             return None
+        # New game builds load CurrencyD before the legacy float currency.
+        if key == "Currency" and "CurrencyD" in d:
+            key = "CurrencyD"
         node = d.get(key)
         if isinstance(node, dict) and "value" in node:
             return node["value"]
@@ -4324,6 +4330,10 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
         d = self.data
         if not isinstance(d, dict):
             return
+        if key == "Currency" and "CurrencyD" in d:
+            precise = d["CurrencyD"]
+            if isinstance(precise, dict) and "value" in precise:
+                precise["value"] = value
         node = d.get(key)
         if isinstance(node, dict) and "value" in node:
             node["value"] = value
@@ -4643,7 +4653,7 @@ class ES3Editor(DocumentMixin, EditorUiMixin, ExtraPagesMixin, ModsPageMixin, Up
         # "其他"页：重建键选择下拉（按原存档 key 顺序）
         self.other_key_box.blockSignals(True)
         self.other_key_box.clear()
-        dedicated = set(self._table_keys) | {"Currency", "Level", "Exp", "Day", "Electricity",
+        dedicated = set(self._table_keys) | {"Currency", "CurrencyD", "Tournament", "Level", "Exp", "Day", "Electricity",
             "ShopName", "CallData", "Difficulty", "Workers", "CryptoData", "Upgrade",
             "NpcPurchase", "Cat", "DeliveryLocation", "AirportNpc", "BodyGuard", "Interior",
             "Tutorial", "ScheduleCall", "NpcRoleFound", "Dirt"}

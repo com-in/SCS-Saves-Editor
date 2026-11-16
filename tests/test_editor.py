@@ -153,6 +153,57 @@ class EditorTests(unittest.TestCase):
         self.addCleanup(self.dialog_guard.stop)
         self.w = self.load(fixture())
 
+    def test_new_game_currency_priority_and_roundtrip(self):
+        data = fixture()
+        data['CurrencyD'] = {'__type': 'double', 'value': 123456789.125}
+        data['Tournament'] = {'value': {'unlockedTier': 2, 'entrants': [], 'bracket': [], 'future': 7}}
+        w = self.load(data)
+        self.assertEqual(w.entry_basic['currency'].text(), '123456789.125')
+        self.assertEqual(w.other_key_box.findData('CurrencyD'), -1)
+        self.assertEqual(w.other_key_box.findData('Tournament'), -1)
+        w.entry_basic['currency'].setText('987654321.625')
+        w.save_ui_to_data()
+        self.assertEqual(w.data['CurrencyD']['value'], 987654321.625)
+        self.assertEqual(w.data['Currency']['value'], 987654321.625)
+        self.assertEqual(w.data['CurrencyD']['__type'], 'double')
+        self.assertEqual(w.data['Tournament'], data['Tournament'])
+
+    def test_tournament_editor_preserves_extensions(self):
+        data = fixture()
+        tournament = dict(unlockedTier=1, highestClearedTier=-1, active=True, currentTier=0,
+                          currentRound=0, carriedHp=80.5, playerWorkerId="worker-1",
+                          entrants=[dict(name=str(i), npcDataId=i, strength=10.0, focus=20.0,
+                                         intelligence=30.0, extension="keep") for i in range(8)],
+                          bracket=list(range(8)) + [-1] * 7, future={"x": 3})
+        data['Tournament'] = {'__type': 'TournamentSaveData', 'value': tournament}
+        w = self.load(data)
+        w.tournament_fields['unlockedTier'].setText('2')
+        w.tournament_fields['carriedHp'].setText('95.25')
+        w.save_ui_to_data()
+        saved = w.data['Tournament']['value']
+        self.assertEqual(saved['unlockedTier'], 2)
+        self.assertEqual(saved['carriedHp'], 95.25)
+        self.assertEqual(saved['entrants'], tournament['entrants'])
+        self.assertEqual(saved['future'], {'x': 3})
+        self.assertEqual(w.data['Tournament']['__type'], 'TournamentSaveData')
+        w.tournament_fields['bracket'].setText('0, 1')
+        with self.assertRaises(ValueError):
+            w.save_ui_to_data()
+
+    def test_old_save_does_not_gain_tournament(self):
+        self.w.save_ui_to_data()
+        self.assertNotIn('Tournament', self.w.data)
+
+    def test_new_game_currency_without_legacy_key(self):
+        data = fixture()
+        del data['Currency']
+        data['CurrencyD'] = {'__type': 'double', 'value': 42.25}
+        w = self.load(data)
+        w.entry_basic['currency'].setText('81.5')
+        w.save_ui_to_data()
+        self.assertEqual(w.data['CurrencyD']['value'], 81.5)
+        self.assertNotIn('Currency', w.data)
+
     def test_guide_covers_every_navigation_page(self):
         self.assertEqual(set(self.w._nav_keys), set(GUIDE_CONTENT))
         dialog = GuideDialog(self.w, "workers")

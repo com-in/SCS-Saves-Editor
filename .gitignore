@@ -8,6 +8,9 @@ build/
 dist/
 *.spec
 
+# 游戏目录
+/game/
+
 # 存档与备份数据（示例存档、玩家存档、临时 JSON）
 *.es3
 *.es3.bak

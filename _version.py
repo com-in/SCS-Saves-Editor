@@ -1,2 +1,2 @@
 """Application version; release builds stamp this from their Git tag."""
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.3.5"

@@ -15,7 +15,7 @@
 import copy
 import json
 from PySide6.QtCore import Qt, QSignalBlocker
-from _save_support import integer_list
+from _save_support import integer_list, number
 from PySide6.QtWidgets import (
     QLabel, QLineEdit, QCheckBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QPushButton, QWidget, QScrollArea, QFrame, QGridLayout,
@@ -95,6 +95,7 @@ class ExtraPagesMixin:
         self._build_extra_cat()
         self._build_extra_delivery()
         self._build_extra_airport()
+        self._build_extra_tournament()
 
     def _build_extra_growth(self):
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
@@ -421,6 +422,67 @@ class ExtraPagesMixin:
         h.setObjectName("Hint"); lay.addWidget(h)
         lay.addStretch(1)
 
+    def _build_extra_tournament(self):
+        lay = self._scroll_lay(self.tab_tournament)
+        lay.setContentsMargins(PAGE_MARGIN, 10, PAGE_MARGIN, PAGE_MARGIN)
+        lay.setSpacing(SECTION_SPACING)
+        self._page_header(lay, "🏆 锦标赛", "编辑解锁进度、当前比赛与参赛者；编号从 0 开始，未通关为 -1。")
+        self.tournament_fields = {}
+        for key, title in (("unlockedTier", "已解锁等级"), ("highestClearedTier", "最高通关等级（-1 未通关）"),
+                           ("currentTier", "当前比赛等级"), ("currentRound", "当前轮次（0–2）"),
+                           ("carriedHp", "剩余生命（-1 使用默认）"), ("playerWorkerId", "参赛工人 ID"),
+                           ("bracket", "签表（15 项，逗号分隔；-1 表示未决）")):
+            lay.addWidget(QLabel(title))
+            entry = QLineEdit()
+            self.tournament_fields[key] = entry
+            lay.addWidget(entry)
+        self.tournament_active = QCheckBox("比赛进行中（需要 8 名参赛者和 15 项签表）")
+        lay.addWidget(self.tournament_active)
+        self.tournament_table = QTableWidget()
+        lay.addWidget(QLabel("参赛者：name 姓名 / npcDataId 角色编号 / strength 力量 / focus 专注 / intelligence 智力"))
+        lay.addWidget(self.tournament_table)
+        lay.addStretch(1)
+
+    def _load_tournament(self):
+        data = self.es3_get("Tournament")
+        available = isinstance(data, dict)
+        self.tab_tournament.setEnabled(available)
+        for key, entry in self.tournament_fields.items():
+            value = data.get(key) if available else None
+            entry.setEnabled(available and key in data)
+            entry.setText(", ".join(map(str, value)) if isinstance(value, list) else str(value) if value is not None else "")
+        self.tournament_active.setChecked(bool(data.get("active")) if available else False)
+        self.tournament_active.setEnabled(available and "active" in data)
+        self._list_load(self.tournament_table, data.get("entrants") if available else [])
+
+    def _save_tournament(self):
+        source = self.es3_get("Tournament")
+        if not isinstance(source, dict):
+            return
+        result = copy.deepcopy(source)
+        for key, entry in self.tournament_fields.items():
+            if key not in source:
+                continue
+            text = entry.text()
+            if key == "bracket":
+                result[key] = integer_list(text, "锦标赛签表")
+            elif key == "playerWorkerId":
+                result[key] = text
+            else:
+                result[key] = number(text, integer=key != "carriedHp", label=key,
+                    minimum=-1 if key in ("carriedHp", "highestClearedTier") else 0,
+                    maximum=2 if key == "currentRound" else None)
+        if "active" in source:
+            result["active"] = self.tournament_active.isChecked()
+        if isinstance(source.get("entrants"), list):
+            result["entrants"] = self._list_save(self.tournament_table)
+        if result.get("active") and result != source:
+            if len(result.get("entrants", [])) != 8 or len(result.get("bracket", [])) != 15:
+                raise ValueError("进行中的锦标赛需要 8 名参赛者和 15 项签表")
+            if any(v < -1 or v > 7 for v in result["bracket"]):
+                raise ValueError("签表编号必须为 -1 或 0–7")
+        self.es3_set("Tournament", result)
+
     def _build_extra_airport(self):
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         lay = self._scroll_lay(self.tab_airport)
@@ -649,6 +711,7 @@ class ExtraPagesMixin:
         return out
 
     def load_extra_ui(self):
+        self._load_tournament()
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         self._list_load(self.progress_table, self.es3_get("Progress"))
         self._list_load(self.easteregg_table, self.es3_get("EasterEgg"))
@@ -735,6 +798,7 @@ class ExtraPagesMixin:
 
     # ==================== 保存到存档 ====================
     def save_extra_to_data(self):
+        self._save_tournament()
         # 版权水印 MD5: 46af17afd73a500c120d6c4f0611dac9
         # 定制表单/高风险项：NpcPurchase / BodyGuard / NpcRoleFound / Dirt
         # （其余新键：Progress/EasterEgg/Mayor/Interior/Tutorial/ScheduleCall/GameStats
